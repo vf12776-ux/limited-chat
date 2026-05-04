@@ -1,11 +1,8 @@
 {
   "name": "P2P Messenger",
   "short_name": "P2P",
-  "description": "Messaging and file sharing",
   "start_url": "/",
   "display": "standalone",
-  "theme_color": "#ffffff",
-  "background_color": "#ffffff",
   "icons": [
     {
       "src": "/icon-45.png",
