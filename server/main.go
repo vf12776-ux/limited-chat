@@ -24,7 +24,7 @@ type Message struct {
 	IsFile    bool   `json:"isFile,omitempty"`
 	FileUrl   string `json:"fileUrl,omitempty"`
 	FileName  string `json:"fileName,omitempty"`
-	Type      string `json:"type"` // "msg", "delete", "userList"
+	Type      string `json:"type"`
 	Timestamp int64  `json:"timestamp"`
 }
 
@@ -49,16 +49,9 @@ func main() {
 	http.HandleFunc("/upload", uploadHandler)
 	http.HandleFunc("/download/", downloadHandler)
 
-	// Static files (React build)
-	staticDir := "./dist"
-	fs := http.FileServer(http.Dir(staticDir))
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if _, err := os.Stat(filepath.Join(staticDir, r.URL.Path)); err == nil {
-			fs.ServeHTTP(w, r)
-			return
-		}
-		http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
-	})
+	// Раздача статики из папки dist (находится в той же директории, что и бинарник)
+	staticDir := "dist"
+	http.Handle("/", http.StripPrefix("/", http.FileServer(http.Dir(staticDir))))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -76,10 +69,6 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Temporary client
-	tempClient := &Client{conn: conn, username: ""}
-
-	// Read first message (must contain username)
 	var msg Message
 	err = conn.ReadJSON(&msg)
 	if err != nil || msg.Type != "hello" || msg.Username == "" {
@@ -87,37 +76,29 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tempClient.username = msg.Username
-
+	client := &Client{conn: conn, username: msg.Username}
 	mu.Lock()
-	clients[tempClient] = true
-	// Send current user list to all
-	userList := []string{}
-	for c := range clients {
-		userList = append(userList, c.username)
-	}
+	clients[client] = true
 	mu.Unlock()
 	broadcastUserList()
 
-	// Send history to new client
 	historyMu.RLock()
 	for _, h := range history {
 		conn.WriteJSON(h)
 	}
 	historyMu.RUnlock()
 
-	// Listen for messages
 	for {
 		var incoming Message
 		err := conn.ReadJSON(&incoming)
 		if err != nil {
 			mu.Lock()
-			delete(clients, tempClient)
+			delete(clients, client)
 			mu.Unlock()
 			broadcastUserList()
 			break
 		}
-		incoming.Username = tempClient.username
+		incoming.Username = client.username
 		if incoming.Type == "" {
 			incoming.Type = "msg"
 		}
@@ -147,16 +128,7 @@ func broadcastUserList() {
 func handleMessages() {
 	for {
 		msg := <-broadcast
-		// Store in history (only non-delete and non-userList messages)
-		if msg.Type == "msg" && msg.To == "" { // broadcast messages only? We'll store all msg type except delete? Better store all except delete and userList
-			historyMu.Lock()
-			history = append(history, msg)
-			if len(history) > maxHistory {
-				history = history[len(history)-maxHistory:]
-			}
-			historyMu.Unlock()
-		} else if msg.Type == "msg" && msg.To != "" {
-			// store private messages as well? Yes, store for history (both users will retrieve)
+		if msg.Type == "msg" {
 			historyMu.Lock()
 			history = append(history, msg)
 			if len(history) > maxHistory {
@@ -164,7 +136,6 @@ func handleMessages() {
 			}
 			historyMu.Unlock()
 		} else if msg.Type == "delete" {
-			// Remove from history
 			historyMu.Lock()
 			newHistory := []Message{}
 			for _, m := range history {
@@ -174,22 +145,18 @@ func handleMessages() {
 			}
 			history = newHistory
 			historyMu.Unlock()
-			// Notify all clients to delete this message from their UI
 			for client := range clients {
 				client.conn.WriteJSON(Message{Type: "delete", ID: msg.ID})
 			}
 			continue
 		}
 
-		// Send to appropriate recipient(s)
 		mu.Lock()
 		if msg.To == "" {
-			// broadcast to all
 			for client := range clients {
 				client.conn.WriteJSON(msg)
 			}
 		} else {
-			// private message: send to specific username and also to sender (for echo)
 			for client := range clients {
 				if client.username == msg.To || client.username == msg.Username {
 					client.conn.WriteJSON(msg)
@@ -205,14 +172,10 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	err := r.ParseMultipartForm(10 << 20) // 10 MB
-	if err != nil {
-		http.Error(w, "Failed to parse form", http.StatusBadRequest)
-		return
-	}
+	r.ParseMultipartForm(10 << 20)
 	file, handler, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "File not found", http.StatusBadRequest)
+		http.Error(w, "File error", http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
@@ -226,11 +189,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer dst.Close()
 
-	_, err = io.Copy(dst, file)
-	if err != nil {
-		http.Error(w, "Server error", http.StatusInternalServerError)
-		return
-	}
+	io.Copy(dst, file)
 	w.Write([]byte("/download/" + handler.Filename))
 }
 
