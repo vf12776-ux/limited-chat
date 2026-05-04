@@ -17,23 +17,31 @@ export default function Chat() {
   const [input, setInput] = useState('');
   const [username, setUsername] = useState('');
   const [users, setUsers] = useState<string[]>([]);
-  const [selectedTo, setSelectedTo] = useState(''); // empty = всем
+  const [selectedTo, setSelectedTo] = useState(''); // '' = всем
   const [isConnected, setIsConnected] = useState(false);
+  const [isJoined, setIsJoined] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const joinChat = () => {
+    if (!username.trim()) return;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
     wsRef.current = ws;
 
     ws.onopen = () => {
       console.log('WS connected');
-      setIsConnected(true);
+      // Отправляем приветственное сообщение с именем
+      ws.send(JSON.stringify({ type: 'hello', username }));
     };
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
+      console.log('Message from server:', data);
       if (data.type === 'userList') {
         setUsers(data.text.split(',').filter((u: string) => u !== username));
       } else if (data.type === 'delete') {
@@ -46,24 +54,19 @@ export default function Chat() {
     };
 
     ws.onclose = () => {
+      console.log('WS closed');
       setIsConnected(false);
     };
 
-    return () => ws.close();
-  }, []);
-
-  // Auto-scroll
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  const sendHello = () => {
-    if (!wsRef.current || !username) return;
-    wsRef.current.send(JSON.stringify({ type: 'hello', username }));
+    setIsConnected(true);
+    setIsJoined(true);
   };
 
   const sendMessage = (text: string, isFile = false, fileUrl = '', fileName = '') => {
-    if (!wsRef.current) return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      alert('Нет соединения с сервером');
+      return;
+    }
     const msg: any = {
       type: 'msg',
       username,
@@ -99,11 +102,11 @@ export default function Chat() {
       sendMessage(`Файл: ${file.name}`, true, downloadUrl, file.name);
     } catch (err) {
       console.error(err);
-      alert('Ошибка загрузки');
+      alert('Ошибка загрузки файла');
     }
   };
 
-  if (!username) {
+  if (!isJoined) {
     return (
       <div style={{ maxWidth: '400px', margin: '50px auto', textAlign: 'center' }}>
         <h2>P2P Messenger</h2>
@@ -114,7 +117,7 @@ export default function Chat() {
           placeholder="Ваше имя"
           style={{ padding: '10px', width: '80%', marginBottom: '10px' }}
         />
-        <button onClick={sendHello} style={{ padding: '10px 20px' }}>Войти</button>
+        <button onClick={joinChat} style={{ padding: '10px 20px' }}>Войти</button>
       </div>
     );
   }
@@ -133,7 +136,7 @@ export default function Chat() {
         </span>
       </div>
 
-      {/* Messages area */}
+      {/* Messages */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '10px', background: '#fff' }}>
         {messages.map((msg) => (
           <div key={msg.id} style={{
@@ -154,7 +157,7 @@ export default function Chat() {
               display: 'inline-block'
             }}>
               <div style={{ fontSize: '12px', color: '#555', marginBottom: '4px' }}>
-                {msg.username} {msg.to ? `→ ${msg.to}` : ''}
+                {msg.username} {msg.to && msg.to !== username ? `→ ${msg.to}` : ''}
               </div>
               {msg.isFile ? (
                 <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">{msg.text}</a>
@@ -166,14 +169,14 @@ export default function Chat() {
               </div>
             </div>
             {msg.username === username && (
-              <button onClick={() => deleteMessage(msg.id)} style={{ background: 'none', border: 'none', color: 'red', cursor: 'pointer' }}>🗑️</button>
+              <button onClick={() => deleteMessage(msg.id)} style={{ background: 'none', border: 'none', color: 'red', cursor: 'pointer', fontSize: '16px' }}>🗑️</button>
             )}
           </div>
         ))}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input area */}
+      {/* Input */}
       <div style={{ padding: '10px', background: '#f0f0f0', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         <input
           type="text"
