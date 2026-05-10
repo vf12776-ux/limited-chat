@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"io"
 	"log"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	_ "modernc.org/sqlite"
 )
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -34,24 +36,91 @@ type Client struct {
 }
 
 var (
-	clients    = make(map[*Client]bool)
-	mu         sync.Mutex
-	broadcast  = make(chan Message)
-	history    = []Message{}
-	historyMu  sync.RWMutex
-	maxHistory = 200
+	clients   = make(map[*Client]bool)
+	mu        sync.Mutex
+	broadcast = make(chan Message)
+	db        *sql.DB
 )
 
+func initDB() {
+	var err error
+	db, err = sql.Open("sqlite", "./messages.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	createTable := `
+    CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        username TEXT,
+        to_username TEXT,
+        text TEXT,
+        is_file BOOLEAN,
+        file_url TEXT,
+        file_name TEXT,
+        type TEXT,
+        timestamp INTEGER
+    );
+    `
+	_, err = db.Exec(createTable)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func loadHistory() []Message {
+	rows, err := db.Query("SELECT id, username, to_username, text, is_file, file_url, file_name, type, timestamp FROM messages ORDER BY timestamp ASC")
+	if err != nil {
+		log.Println("loadHistory error:", err)
+		return []Message{}
+	}
+	defer rows.Close()
+	var history []Message
+	for rows.Next() {
+		var m Message
+		var toPtr sql.NullString
+		err := rows.Scan(&m.ID, &m.Username, &toPtr, &m.Text, &m.IsFile, &m.FileUrl, &m.FileName, &m.Type, &m.Timestamp)
+		if err != nil {
+			log.Println("scan error:", err)
+			continue
+		}
+		if toPtr.Valid {
+			m.To = toPtr.String
+		}
+		history = append(history, m)
+	}
+	return history
+}
+
+func saveMessageToDB(m Message) {
+	_, err := db.Exec("INSERT INTO messages(id, username, to_username, text, is_file, file_url, file_name, type, timestamp) VALUES(?,?,?,?,?,?,?,?,?)",
+		m.ID, m.Username, m.To, m.Text, m.IsFile, m.FileUrl, m.FileName, m.Type, m.Timestamp)
+	if err != nil {
+		log.Println("saveMessage error:", err)
+	}
+}
+
+func deleteMessageFromDB(id string) {
+	_, err := db.Exec("DELETE FROM messages WHERE id = ?", id)
+	if err != nil {
+		log.Println("deleteMessage error:", err)
+	}
+}
+
 func main() {
-	go handleMessages()
+	initDB()
+	defer db.Close()
+
+	// Загружаем историю из БД
+	history := loadHistory()
+	// Отправим историю новым клиентам
+	go handleMessages(history)
 
 	http.HandleFunc("/ws", wsHandler)
 	http.HandleFunc("/upload", uploadHandler)
 	http.HandleFunc("/download/", downloadHandler)
 
-	// Раздача статики из папки dist (находится в той же директории, что и бинарник)
 	staticDir := "dist"
-	http.Handle("/", http.StripPrefix("/", http.FileServer(http.Dir(staticDir))))
+	http.Handle("/", http.FileServer(http.Dir(staticDir)))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -82,11 +151,11 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	mu.Unlock()
 	broadcastUserList()
 
-	historyMu.RLock()
+	// Отправляем историю из БД
+	history := loadHistory()
 	for _, h := range history {
 		conn.WriteJSON(h)
 	}
-	historyMu.RUnlock()
 
 	for {
 		var incoming Message
@@ -108,6 +177,12 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		if incoming.Timestamp == 0 {
 			incoming.Timestamp = time.Now().Unix()
 		}
+
+		// Сохраняем в БД, если это не служебное сообщение (не delete)
+		if incoming.Type != "delete" {
+			saveMessageToDB(incoming)
+		}
+
 		broadcast <- incoming
 	}
 }
@@ -125,32 +200,29 @@ func broadcastUserList() {
 	}
 }
 
-func handleMessages() {
+func handleMessages(initialHistory []Message) {
+	// Сначала отправим сохранённые сообщения всем текущим клиентам? Они уже отправлены при подключении.
 	for {
 		msg := <-broadcast
-		if msg.Type == "msg" {
-			historyMu.Lock()
-			history = append(history, msg)
-			if len(history) > maxHistory {
-				history = history[len(history)-maxHistory:]
-			}
-			historyMu.Unlock()
-		} else if msg.Type == "delete" {
-			historyMu.Lock()
-			newHistory := []Message{}
-			for _, m := range history {
-				if m.ID != msg.ID {
-					newHistory = append(newHistory, m)
+		if msg.Type == "delete" {
+			// Удаляем из БД, только если отправитель совпадает с автором сообщения
+			// Нужно проверить в БД, кто автор. Лучше при удалении передавать ID, а мы уже знаем автора из сообщения?
+			// При удалении мы получаем только ID. Поэтому запросим автора из БД.
+			var author string
+			err := db.QueryRow("SELECT username FROM messages WHERE id = ?", msg.ID).Scan(&author)
+			if err == nil && author == msg.Username {
+				deleteMessageFromDB(msg.ID)
+				// Уведомляем всех об удалении
+				for client := range clients {
+					client.conn.WriteJSON(Message{Type: "delete", ID: msg.ID})
 				}
-			}
-			history = newHistory
-			historyMu.Unlock()
-			for client := range clients {
-				client.conn.WriteJSON(Message{Type: "delete", ID: msg.ID})
+			} else {
+				log.Println("Unauthorized delete attempt by", msg.Username, "for msg", msg.ID)
 			}
 			continue
 		}
 
+		// Рассылаем сообщение всем, кому нужно
 		mu.Lock()
 		if msg.To == "" {
 			for client := range clients {
