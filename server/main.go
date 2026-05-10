@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -161,7 +160,6 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 
 		if incoming.Type == "msg" {
 			saveMessageToDB(incoming)
-			// Аcknowledgement отправителю
 			conn.WriteJSON(Message{Type: "ack", ID: incoming.ID})
 			broadcast <- incoming
 		} else if incoming.Type == "delete" {
