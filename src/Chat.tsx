@@ -35,7 +35,6 @@ export default function Chat() {
 
     ws.onopen = () => {
       console.log('WS connected');
-      // Отправляем приветственное сообщение с именем
       ws.send(JSON.stringify({ type: 'hello', username }));
     };
 
@@ -92,19 +91,26 @@ export default function Chat() {
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  const formData = new FormData();
-  formData.append('file', file);
-  try {
-    const response = await fetch('/upload', { method: 'POST', body: formData });
-    const downloadUrl = await response.text(); // теперь это "/api/file/..."
-    sendMessage(`Файл: ${file.name}`, true, downloadUrl, file.name);
-  } catch (err) {
-    console.error(err);
-    alert('Ошибка загрузки файла');
-  }
-};
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const response = await fetch('/upload', { method: 'POST', body: formData });
+      const downloadUrl = await response.text();
+      sendMessage(`Файл: ${file.name}`, true, downloadUrl, file.name);
+    } catch (err) {
+      console.error(err);
+      alert('Ошибка загрузки файла');
+    }
+  };
+
+  const isImageFile = (fileName?: string): boolean => {
+    if (!fileName) return false;
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext || '');
+  };
+
   if (!isJoined) {
     return (
       <div style={{ maxWidth: '400px', margin: '50px auto', textAlign: 'center' }}>
@@ -159,7 +165,13 @@ export default function Chat() {
                 {msg.username} {msg.to && msg.to !== username ? `→ ${msg.to}` : ''}
               </div>
               {msg.isFile ? (
-                <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">{msg.text}</a>
+                isImageFile(msg.fileName) ? (
+                  <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">
+                    <img src={msg.fileUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '8px' }} />
+                  </a>
+                ) : (
+                  <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">{msg.text}</a>
+                )
               ) : (
                 <div>{msg.text}</div>
               )}

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -304,7 +305,31 @@ func fileHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
-	w.Header().Set("Content-Disposition", "attachment; filename="+fileName)
-	w.Header().Set("Content-Type", "application/octet-stream")
+
+	// Определяем Content-Type по расширению файла
+	ext := strings.ToLower(filepath.Ext(fileName))
+	var contentType string
+	switch ext {
+	case ".jpg", ".jpeg":
+		contentType = "image/jpeg"
+	case ".png":
+		contentType = "image/png"
+	case ".gif":
+		contentType = "image/gif"
+	case ".webp":
+		contentType = "image/webp"
+	case ".svg":
+		contentType = "image/svg+xml"
+	default:
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+
+	// Для изображений показываем inline, для остальных - attachment
+	if strings.HasPrefix(contentType, "image/") {
+		w.Header().Set("Content-Disposition", "inline; filename="+fileName)
+	} else {
+		w.Header().Set("Content-Disposition", "attachment; filename="+fileName)
+	}
 	w.Write(data)
 }
