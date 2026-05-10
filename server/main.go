@@ -25,6 +25,7 @@ type Message struct {
 	IsFile    bool   `json:"isFile,omitempty"`
 	FileUrl   string `json:"fileUrl,omitempty"`
 	FileName  string `json:"fileName,omitempty"`
+	MimeType  string `json:"mimeType,omitempty"`
 	Type      string `json:"type"`
 	Timestamp int64  `json:"timestamp"`
 }
@@ -59,6 +60,7 @@ func initDB() {
         is_file BOOLEAN,
         file_name TEXT,
         file_data BYTEA,
+        mime_type TEXT,
         type TEXT,
         timestamp BIGINT
     );
@@ -68,15 +70,15 @@ func initDB() {
 
 func saveMessageToDB(m Message) error {
 	_, err := db.Exec(`
-        INSERT INTO messages(id, username, text, is_file, file_name, file_data, type, timestamp)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
-		m.ID, m.Username, m.Text, m.IsFile, m.FileName, nil, m.Type, m.Timestamp)
+        INSERT INTO messages(id, username, text, is_file, file_name, file_data, mime_type, type, timestamp)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		m.ID, m.Username, m.Text, m.IsFile, m.FileName, nil, m.MimeType, m.Type, m.Timestamp)
 	return err
 }
 
 func loadHistory() []Message {
 	rows, err := db.Query(`
-        SELECT id, username, text, is_file, file_name, type, timestamp
+        SELECT id, username, text, is_file, file_name, mime_type, type, timestamp
         FROM messages ORDER BY timestamp ASC
     `)
 	if err != nil {
@@ -86,7 +88,7 @@ func loadHistory() []Message {
 	var msgs []Message
 	for rows.Next() {
 		var m Message
-		rows.Scan(&m.ID, &m.Username, &m.Text, &m.IsFile, &m.FileName, &m.Type, &m.Timestamp)
+		rows.Scan(&m.ID, &m.Username, &m.Text, &m.IsFile, &m.FileName, &m.MimeType, &m.Type, &m.Timestamp)
 		if m.IsFile {
 			m.FileUrl = "/api/file/" + m.ID
 		}
@@ -159,7 +161,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 
 		if incoming.Type == "msg" {
 			saveMessageToDB(incoming)
-			// Отправляем подтверждение отправителю
+			// Аcknowledgement отправителю
 			conn.WriteJSON(Message{Type: "ack", ID: incoming.ID})
 			broadcast <- incoming
 		} else if incoming.Type == "delete" {
@@ -172,7 +174,6 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		} else if incoming.Type == "clear_chat" {
-			// Очистка всего чата (все сообщения у всех)
 			if client.username != "" {
 				db.Exec("DELETE FROM messages")
 				clearMsg := Message{Type: "clear_chat"}
@@ -228,18 +229,24 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mimeType := handler.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
 	fileMsg := Message{
 		ID:        uuid.New().String(),
 		Text:      handler.Filename,
 		IsFile:    true,
 		FileName:  handler.Filename,
+		MimeType:  mimeType,
 		Type:      "msg",
 		Timestamp: time.Now().Unix(),
 	}
 	_, err = db.Exec(`
-        INSERT INTO messages(id, username, text, is_file, file_name, file_data, type, timestamp)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
-		fileMsg.ID, "", fileMsg.Text, true, fileMsg.FileName, data, fileMsg.Type, fileMsg.Timestamp)
+        INSERT INTO messages(id, username, text, is_file, file_name, file_data, mime_type, type, timestamp)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		fileMsg.ID, "", fileMsg.Text, true, fileMsg.FileName, data, fileMsg.MimeType, fileMsg.Type, fileMsg.Timestamp)
 	if err != nil {
 		http.Error(w, "DB error", http.StatusInternalServerError)
 		return
@@ -251,21 +258,12 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 func fileHandler(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/file/")
 	var data []byte
-	var fileName string
-	err := db.QueryRow("SELECT file_data, file_name FROM messages WHERE id=$1", id).Scan(&data, &fileName)
+	var mimeType string
+	err := db.QueryRow("SELECT file_data, mime_type FROM messages WHERE id=$1", id).Scan(&data, &mimeType)
 	if err != nil {
 		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
-	ext := strings.ToLower(filepath.Ext(fileName))
-	ctype := "application/octet-stream"
-	if ext == ".jpg" || ext == ".jpeg" {
-		ctype = "image/jpeg"
-	} else if ext == ".png" {
-		ctype = "image/png"
-	} else if ext == ".gif" {
-		ctype = "image/gif"
-	}
-	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Content-Type", mimeType)
 	w.Write(data)
 }

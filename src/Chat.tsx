@@ -7,9 +7,10 @@ interface Message {
   isFile?: boolean;
   fileUrl?: string;
   fileName?: string;
+  mimeType?: string;
   type?: string;
   timestamp: number;
-  status?: 'pending' | 'sent'; // добавлено для статусов
+  status?: 'pending' | 'sent';
 }
 
 export default function Chat() {
@@ -46,29 +47,23 @@ export default function Chat() {
       if (data.type === 'delete') {
         setMessages(prev => prev.filter(m => m.id !== data.id));
       } else if (data.type === 'msg' || data.type === '') {
-        // При получении сообщения от сервера
         setMessages(prev => {
-          // Если это сообщение уже есть (например, было отправлено с pending) – обновляем его, но обычно нет
           const exists = prev.some(m => m.id === data.id);
           if (exists) return prev;
-          // Для своих сообщений, пришедших из истории, ставим status: 'sent'
           const newMsg = { ...data, status: data.username === username ? 'sent' : undefined };
           return [...prev, newMsg];
         });
         pendingMessagesRef.current = pendingMessagesRef.current.filter(p => p.id !== data.id);
       } else if (data.type === 'ack') {
-        // Подтверждение от сервера – меняем статус с pending на sent
         setMessages(prev =>
           prev.map(msg =>
             msg.id === data.id && msg.username === username ? { ...msg, status: 'sent' } : msg
           )
         );
       } else if (data.type === 'clear_chat') {
-        // Полная очистка чата по команде сервера
         setMessages([]);
-      } else if (data.type === 'userList') {
-        // Игнорируем список пользователей
       }
+      // userList игнорируем
     };
 
     ws.onclose = () => {
@@ -93,7 +88,7 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const sendMessage = (text: string, isFile = false, fileUrl = '', fileName = '') => {
+  const sendMessage = (text: string, isFile = false, fileUrl = '', fileName = '', mimeType = '') => {
     const msg: Message = {
       id: Date.now().toString() + Math.random(),
       type: 'msg',
@@ -102,8 +97,9 @@ export default function Chat() {
       isFile,
       fileUrl,
       fileName,
+      mimeType,
       timestamp: Date.now(),
-      status: 'pending', // начальный статус
+      status: 'pending',
     };
     setMessages(prev => [...prev, msg]);
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -121,7 +117,6 @@ export default function Chat() {
   const clearChat = () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify({ type: 'clear_chat' }));
-    // Локально тоже очищаем сразу (сервер всё равно пришлёт clear_chat)
     setMessages([]);
   };
 
@@ -139,17 +134,15 @@ export default function Chat() {
     try {
       const response = await fetch('/upload', { method: 'POST', body: formData });
       const downloadUrl = await response.text();
-      sendMessage(`Файл: ${file.name}`, true, downloadUrl, file.name);
+      sendMessage(`Файл: ${file.name}`, true, downloadUrl, file.name, file.type);
     } catch (err) {
       console.error(err);
       alert('Ошибка загрузки файла');
     }
   };
 
-  const isImageFile = (url?: string): boolean => {
-    if (!url) return false;
-    const ext = url.split('.').pop()?.toLowerCase();
-    return ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'gif' || ext === 'webp';
+  const isImage = (mimeType?: string): boolean => {
+    return !!mimeType && mimeType.startsWith('image/');
   };
 
   if (!isJoined) {
@@ -201,7 +194,7 @@ export default function Chat() {
                 {msg.username}
               </div>
               {msg.isFile ? (
-                isImageFile(msg.fileUrl) ? (
+                isImage(msg.mimeType) ? (
                   <img src={msg.fileUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '8px' }} />
                 ) : (
                   <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">{msg.text}</a>
