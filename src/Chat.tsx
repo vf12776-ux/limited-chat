@@ -7,7 +7,6 @@ interface Message {
   isFile?: boolean;
   fileUrl?: string;
   fileName?: string;
-  mimeType?: string;
   type?: string;
   timestamp: number;
   status?: 'pending' | 'sent';
@@ -50,6 +49,7 @@ export default function Chat() {
         setMessages(prev => {
           const exists = prev.some(m => m.id === data.id);
           if (exists) return prev;
+          // Если это сообщение от текущего пользователя и оно из истории – ставим sent
           const newMsg = { ...data, status: data.username === username ? 'sent' : undefined };
           return [...prev, newMsg];
         });
@@ -63,7 +63,6 @@ export default function Chat() {
       } else if (data.type === 'clear_chat') {
         setMessages([]);
       }
-      // userList игнорируем
     };
 
     ws.onclose = () => {
@@ -88,7 +87,7 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const sendMessage = (text: string, isFile = false, fileUrl = '', fileName = '', mimeType = '') => {
+  const sendMessage = (text: string, isFile = false, fileUrl = '', fileName = '') => {
     const msg: Message = {
       id: Date.now().toString() + Math.random(),
       type: 'msg',
@@ -97,7 +96,6 @@ export default function Chat() {
       isFile,
       fileUrl,
       fileName,
-      mimeType,
       timestamp: Date.now(),
       status: 'pending',
     };
@@ -117,7 +115,6 @@ export default function Chat() {
   const clearChat = () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify({ type: 'clear_chat' }));
-    setMessages([]);
   };
 
   const handleSendText = () => {
@@ -131,18 +128,23 @@ export default function Chat() {
     if (!file) return;
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('username', username);
     try {
       const response = await fetch('/upload', { method: 'POST', body: formData });
-      const downloadUrl = await response.text();
-      sendMessage(`Файл: ${file.name}`, true, downloadUrl, file.name, file.type);
+      if (!response.ok) throw new Error();
+      // Сервер сам разошлёт сообщение через broadcast, нам не нужно отправлять дополнительно
+      // Просто очистим input
     } catch (err) {
       console.error(err);
       alert('Ошибка загрузки файла');
     }
+    e.target.value = '';
   };
 
-  const isImage = (mimeType?: string): boolean => {
-    return !!mimeType && mimeType.startsWith('image/');
+  const isImageFile = (fileName?: string): boolean => {
+    if (!fileName) return false;
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    return ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'gif' || ext === 'webp';
   };
 
   if (!isJoined) {
@@ -194,10 +196,10 @@ export default function Chat() {
                 {msg.username}
               </div>
               {msg.isFile ? (
-                isImage(msg.mimeType) ? (
+                isImageFile(msg.fileName) ? (
                   <img src={msg.fileUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '8px' }} />
                 ) : (
-                  <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">{msg.text}</a>
+                  <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">{msg.fileName || msg.text}</a>
                 )
               ) : (
                 <div>{msg.text}</div>
