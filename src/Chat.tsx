@@ -10,7 +10,8 @@ interface Message {
   fileName?: string;
   type?: string;
   timestamp: number;
-  pending?: boolean; // помечено как неотправленное
+  pending?: boolean;
+  status?: string;
 }
 
 export default function Chat() {
@@ -23,11 +24,10 @@ export default function Chat() {
   const [isJoined, setIsJoined] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const pendingMessagesRef = useRef<Message[]>([]); // очередь неотправленных
+  const pendingMessagesRef = useRef<Message[]>([]);
   const reconnectAttemptsRef = useRef(0);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectTimeoutRef = useRef<number>();
 
-  // Функция подключения с авто-переподключением
   const connectWebSocket = () => {
     if (!isJoined) return;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -35,60 +35,93 @@ export default function Chat() {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log('WS connected');
       setIsConnected(true);
       reconnectAttemptsRef.current = 0;
-      // Отправляем приветствие с именем
       ws.send(JSON.stringify({ type: 'hello', username }));
-      // Отправляем все накопленные сообщения из очереди
-      if (pendingMessagesRef.current.length > 0) {
+      if (pendingMessagesRef.current.length) {
         const toSend = [...pendingMessagesRef.current];
         pendingMessagesRef.current = [];
-        toSend.forEach(msg => {
-          ws.send(JSON.stringify(msg));
-        });
+        toSend.forEach(msg => ws.send(JSON.stringify(msg)));
       }
     };
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      if (data.type === 'userList') {
-        setUsers(data.text.split(',').filter((u: string) => u !== username));
-      } else if (data.type === 'delete') {
-        setMessages(prev => prev.filter(m => m.id !== data.id));
-      } else if (data.type === 'msg' || data.type === '') {
-        setMessages(prev => [...prev, data]);
-        // Если это было наше сообщение с пометкой pending, удаляем его из очереди
-        if (data.id && pendingMessagesRef.current.some(p => p.id === data.id)) {
+      switch (data.type) {
+        case 'userList':
+  if (typeof data.text === 'string') {
+    const usersArray = data.text.split(',');
+    const filteredUsers = [];
+    for (let i = 0; i < usersArray.length; i++) {
+      const name = usersArray[i];
+      if (name && name !== username) {
+        filteredUsers.push(name);
+      }
+    }
+    setUsers(filteredUsers);
+  } else {
+    setUsers([]);
+  }
+  break;
+        case 'delete':
+          setMessages(prev => prev.filter(m => m.id !== data.id));
+          break;
+        case 'ack':
+          setMessages(prev => prev.map(m => m.id === data.id ? { ...m, pending: false, status: 'sent' } : m));
           pendingMessagesRef.current = pendingMessagesRef.current.filter(p => p.id !== data.id);
-        }
-      } else if (data.type === 'ack') {
-        // Сообщение подтверждено сервером, убираем из очереди
-        pendingMessagesRef.current = pendingMessagesRef.current.filter(p => p.id !== data.id);
-      } else if (data.type === 'error') {
-        alert(data.text);
+          break;
+        case 'delivered':
+          setMessages(prev => prev.map(m => m.id === data.id ? { ...m, status: 'delivered' } : m));
+          break;
+        case 'read':
+          setMessages(prev => prev.map(m => m.id === data.id ? { ...m, status: 'read' } : m));
+          break;
+        case 'msg':
+          setMessages(prev => [...prev, data]);
+          break;
+        default:
+          if (data.type === '' || !data.type) {
+            setMessages(prev => [...prev, data]);
+          }
       }
     };
 
     ws.onclose = () => {
-      console.log('WS closed');
       setIsConnected(false);
-      // Пытаемся переподключиться через некоторое время
       const delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttemptsRef.current));
       reconnectAttemptsRef.current++;
-      reconnectTimeoutRef.current = setTimeout(connectWebSocket, delay);
+      reconnectTimeoutRef.current = window.setTimeout(connectWebSocket, delay);
     };
 
-    ws.onerror = (err) => {
-      console.error('WS error', err);
-      ws.close();
-    };
+    ws.onerror = () => ws.close();
   };
 
-  // Отправка сообщения (с сохранением в очередь при потере соединения)
+  useEffect(() => {
+    if (isJoined) connectWebSocket();
+    return () => {
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, [isJoined]);
+
+  // Авто-скролл вниз
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Отправка read для сообщений, адресованных текущему пользователю
+  useEffect(() => {
+    const unread = messages.filter(m => m.to === username && m.status !== 'read' && m.username !== username);
+    unread.forEach(m => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'read', id: m.id }));
+      }
+    });
+  }, [messages, username]);
+
   const sendMessage = (text: string, isFile = false, fileUrl = '', fileName = '') => {
     const msg: any = {
-      id: Date.now().toString() + Math.random(), // временный ID
+      id: Date.now().toString() + Math.random(),
       type: 'msg',
       username,
       text,
@@ -99,13 +132,10 @@ export default function Chat() {
       timestamp: Date.now(),
       pending: true,
     };
-    // Показываем сообщение в UI сразу, но с пометкой "отправляется"
     setMessages(prev => [...prev, msg]);
-    // Пытаемся отправить сразу
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(msg));
     } else {
-      // Если нет соединения, кладём в очередь
       pendingMessagesRef.current.push(msg);
     }
   };
@@ -113,6 +143,13 @@ export default function Chat() {
   const deleteMessage = (id: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify({ type: 'delete', id }));
+  };
+
+  const clearChat = async () => {
+    if (confirm('Удалить всю историю чата?') && wsRef.current) {
+      await fetch('/clear-chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }) });
+      setMessages([]);
+    }
   };
 
   const handleSendText = () => {
@@ -137,25 +174,10 @@ export default function Chat() {
   };
 
   const isImageFile = (fileUrl?: string): boolean => {
-  if (!fileUrl) return false;
-  const ext = fileUrl.split('.').pop()?.toLowerCase();
-  return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext || '');
-};
-
-  // Запуск подключения после входа в чат
-  useEffect(() => {
-    if (isJoined) {
-      connectWebSocket();
-    }
-    return () => {
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-      if (wsRef.current) wsRef.current.close();
-    };
-  }, [isJoined]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (!fileUrl) return false;
+    const ext = fileUrl.split('.').pop()?.toLowerCase();
+    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext || '');
+  };
 
   if (!isJoined) {
     return (
@@ -164,7 +186,7 @@ export default function Chat() {
         <input
           type="text"
           value={username}
-          onChange={(e) => setUsername(e.target.value)}
+          onChange={e => setUsername(e.target.value)}
           placeholder="Ваше имя"
           style={{ padding: '10px', width: '80%', marginBottom: '10px' }}
         />
@@ -175,19 +197,18 @@ export default function Chat() {
 
   return (
     <div style={{ display: 'flex', height: '100vh', flexDirection: 'column', maxWidth: '1200px', margin: '0 auto' }}>
-      <div style={{ padding: '10px', background: '#f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ padding: '10px', background: '#f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
         <span>Чат: {username}</span>
         <select value={selectedTo} onChange={e => setSelectedTo(e.target.value)} style={{ padding: '5px' }}>
           <option value="">Всем</option>
           {users.map(u => <option key={u} value={u}>{u}</option>)}
         </select>
-        <span style={{ fontSize: '12px', color: isConnected ? 'green' : 'red' }}>
-          {isConnected ? '● Онлайн' : '○ Офлайн'}
-        </span>
+        <span style={{ fontSize: '12px', color: isConnected ? 'green' : 'red' }}>{isConnected ? '● Онлайн' : '○ Офлайн'}</span>
+        <button onClick={clearChat} style={{ background: '#dc3545', color: 'white', border: 'none', borderRadius: '5px', padding: '5px 10px' }}>Очистить чат</button>
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '10px', background: '#fff' }}>
-        {messages.map((msg) => (
+        {messages.map(msg => (
           <div key={msg.id} style={{
             marginBottom: '12px',
             textAlign: msg.username === username ? 'right' : 'left',
@@ -204,29 +225,33 @@ export default function Chat() {
               padding: '8px 12px',
               maxWidth: '70%',
               display: 'inline-block',
-              opacity: msg.pending ? 0.5 : 1
+              opacity: msg.pending ? 0.7 : 1
             }}>
               <div style={{ fontSize: '15px', fontWeight: 'bold', color: '#000', marginBottom: '4px' }}>
-  {msg.username} {msg.to && msg.to !== username ? `→ ${msg.to}` : ''}
-</div>
+                {msg.username} {msg.to && msg.to !== username ? `→ ${msg.to}` : ''}
+              </div>
               {msg.isFile ? (
-  isImageFile(msg.fileName) ? (
-    <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">
-      <img src={msg.fileUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '8px' }} />
-    </a>
-  ) : (
-    <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">{msg.text}</a>
-  )
-) : (
-  <div>{msg.text}</div>
-)}
-              <div style={{ fontSize: '10px', color: '#aaa', marginTop: '4px' }}>
-                {new Date(msg.timestamp).toLocaleTimeString()}
-                {msg.pending && ' (⌛)'}
+                isImageFile(msg.fileUrl) ? (
+                  <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">
+                    <img src={msg.fileUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '8px' }} />
+                  </a>
+                ) : (
+                  <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">{msg.text}</a>
+                )
+              ) : (
+                <div>{msg.text}</div>
+              )}
+              <div style={{ fontSize: '10px', color: '#aaa', marginTop: '4px', display: 'flex', gap: '8px' }}>
+                <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                {msg.pending ? <span>⌛</span> : (
+                  msg.status === 'sent' ? <span>✓</span> :
+                  msg.status === 'delivered' ? <span>✓✓</span> :
+                  msg.status === 'read' ? <span style={{ color: '#4caf50' }}>✓✓</span> : null
+                )}
               </div>
             </div>
             {msg.username === username && !msg.pending && (
-              <button onClick={() => deleteMessage(msg.id)} style={{ background: 'none', border: 'none', color: 'red', cursor: 'pointer', fontSize: '16px' }}>🗑️</button>
+              <button onClick={() => deleteMessage(msg.id)} style={{ background: 'none', border: 'none', color: 'red', cursor: 'pointer', fontSize: '18px' }}>🗑️</button>
             )}
           </div>
         ))}
@@ -237,8 +262,8 @@ export default function Chat() {
         <input
           type="text"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSendText()}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleSendText()}
           placeholder="Сообщение..."
           style={{ flex: 1, padding: '10px', borderRadius: '20px', border: '1px solid #ccc' }}
         />
