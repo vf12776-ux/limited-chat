@@ -26,6 +26,9 @@ export default function Chat() {
   const [isConnected, setIsConnected] = useState(false);
   const [isJoined, setIsJoined] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
+  const [toast, setToast] = useState<{ message: string; type: 'error' | 'info' } | null>(null);
+  
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pendingMessagesRef = useRef<Message[]>([]);
@@ -36,7 +39,19 @@ export default function Chat() {
   const pendingFilesRef = useRef<PendingFile[]>([]);
   const retryIntervalRef = useRef<number>();
 
-  // ----- WebSocket -----
+  // ----- Уведомления -----
+  const showToast = (message: string, type: 'error' | 'info' = 'error') => {
+    setToast({ message, type });
+  };
+
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
+
+  // ----- WebSocket (без изменений) -----
   const connectWebSocket = () => {
     if (!isJoined) return;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -99,39 +114,62 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // ----- Очередь файлов с повторными попытками -----
-  const retryPendingFiles = async () => {
-    if (pendingFilesRef.current.length === 0) return;
-    console.log(`Retrying ${pendingFilesRef.current.length} pending files...`);
-    const toRetry = [...pendingFilesRef.current];
-    pendingFilesRef.current = [];
-    for (const fileItem of toRetry) {
-      await uploadFileWithRetry(fileItem.formData, fileItem.fileName, fileItem.id, fileItem.retryCount);
-    }
+  // ----- Очередь файлов с прогрессом -----
+  const uploadFileWithProgress = (formData: FormData, tempId: string, fileName: string): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/upload');
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percent = Math.round((event.loaded / event.total) * 100);
+          setUploadProgress(prev => ({ ...prev, [tempId]: percent }));
+        }
+      };
+      xhr.onload = () => {
+        setUploadProgress(prev => {
+          const newState = { ...prev };
+          delete newState[tempId];
+          return newState;
+        });
+        if (xhr.status === 200) resolve();
+        else reject(new Error(`HTTP ${xhr.status}`));
+      };
+      xhr.onerror = () => reject(new Error('Network error'));
+      xhr.send(formData);
+    });
   };
 
   const uploadFileWithRetry = async (formData: FormData, fileName: string, tempId: string, retries: number) => {
     try {
-      const response = await fetch('/upload', { method: 'POST', body: formData });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      await uploadFileWithProgress(formData, tempId, fileName);
       pendingFilesRef.current = pendingFilesRef.current.filter(f => f.id !== tempId);
       setMessages(prev =>
         prev.map(msg =>
           msg.id === tempId && msg.username === username ? { ...msg, status: 'sent' } : msg
         )
       );
+      showToast(`✅ Файл "${fileName}" отправлен`, 'info');
     } catch (err) {
       if (retries < 5) {
         pendingFilesRef.current.push({ id: tempId, formData, fileName, retryCount: retries + 1 });
-        console.log(`File upload failed, retry ${retries + 1}/5: ${fileName}`);
+        console.log(`Retry ${retries + 1}/5 for ${fileName}`);
       } else {
-        console.error(`File upload failed after 5 retries: ${fileName}`);
         setMessages(prev =>
           prev.map(msg =>
             msg.id === tempId ? { ...msg, text: `❌ ${msg.text} (ошибка отправки)` } : msg
           )
         );
+        showToast(`❌ Не удалось отправить "${fileName}" после 5 попыток`, 'error');
       }
+    }
+  };
+
+  const retryPendingFiles = async () => {
+    if (pendingFilesRef.current.length === 0) return;
+    const toRetry = [...pendingFilesRef.current];
+    pendingFilesRef.current = [];
+    for (const fileItem of toRetry) {
+      await uploadFileWithRetry(fileItem.formData, fileItem.fileName, fileItem.id, fileItem.retryCount);
     }
   };
 
@@ -178,7 +216,6 @@ export default function Chat() {
     }
   };
 
-  // ----- Удаление / очистка -----
   const deleteMessage = (id: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify({ type: 'delete', id }));
@@ -195,7 +232,6 @@ export default function Chat() {
     setInput('');
   };
 
-  // ----- Файлы (обычные) -----
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -203,7 +239,7 @@ export default function Chat() {
     e.target.value = '';
   };
 
-  // ----- Голосовые сообщения -----
+  // ----- Голосовые -----
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -227,7 +263,7 @@ export default function Chat() {
       setIsRecording(true);
     } catch (err) {
       console.error(err);
-      alert('Не удалось получить доступ к микрофону');
+      showToast('🎤 Не удалось получить доступ к микрофону', 'error');
     }
   };
 
@@ -237,7 +273,6 @@ export default function Chat() {
     }
   };
 
-  // ----- Вспомогательные функции для отображения -----
   const isImageFile = (fileName?: string): boolean => {
     if (!fileName) return false;
     const ext = fileName.split('.').pop()?.toLowerCase();
@@ -250,7 +285,7 @@ export default function Chat() {
     return ext === 'webm' || ext === 'mp3' || ext === 'wav' || ext === 'ogg';
   };
 
-  // ----- Эффекты для периодической отправки файлов при плохой сети -----
+  // ----- Периодический ретрай файлов -----
   useEffect(() => {
     if (isJoined) {
       retryIntervalRef.current = window.setInterval(() => {
@@ -264,14 +299,13 @@ export default function Chat() {
 
   useEffect(() => {
     const handleOnline = () => {
-      console.log('Network online, retrying files...');
       retryPendingFiles();
     };
     window.addEventListener('online', handleOnline);
     return () => window.removeEventListener('online', handleOnline);
   }, []);
 
-  // ----- Интерфейс входа в чат -----
+  // ----- Рендер входа -----
   if (!isJoined) {
     return (
       <div style={{ maxWidth: '400px', margin: '50px auto', textAlign: 'center' }}>
@@ -291,6 +325,14 @@ export default function Chat() {
   // ----- Основной рендер чата -----
   return (
     <div style={{ display: 'flex', height: '100vh', flexDirection: 'column', maxWidth: '1200px', margin: '0 auto' }}>
+      <style>{`
+        @keyframes fadeInOut {
+          0% { opacity: 0; transform: translateY(20px); }
+          10% { opacity: 1; transform: translateY(0); }
+          90% { opacity: 1; transform: translateY(0); }
+          100% { opacity: 0; transform: translateY(20px); }
+        }
+      `}</style>
       <div style={{ padding: '10px', background: '#f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
         <span>Чат: {username}</span>
         <span style={{ fontSize: '12px', color: isConnected ? 'green' : 'red' }}>{isConnected ? '● Онлайн' : '○ Офлайн'}</span>
@@ -322,13 +364,20 @@ export default function Chat() {
                 {msg.username}
               </div>
               {msg.isFile ? (
-                isImageFile(msg.fileName) ? (
-                  <img src={msg.fileUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '8px' }} />
-                ) : isAudioFile(msg.fileName) ? (
-                  <audio controls src={msg.fileUrl} style={{ minWidth: '200px' }} />
-                ) : (
-                  <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">{msg.fileName || msg.text}</a>
-                )
+                <>
+                  {isImageFile(msg.fileName) ? (
+                    <img src={msg.fileUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '8px' }} />
+                  ) : isAudioFile(msg.fileName) ? (
+                    <audio controls src={msg.fileUrl} style={{ minWidth: '200px' }} />
+                  ) : (
+                    <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">{msg.fileName || msg.text}</a>
+                  )}
+                  {uploadProgress[msg.id] !== undefined && (
+                    <div style={{ fontSize: '10px', marginTop: '4px', color: '#007bff' }}>
+                      ⏳ Отправка: {uploadProgress[msg.id]}%
+                    </div>
+                  )}
+                </>
               ) : (
                 <div>{msg.text}</div>
               )}
@@ -381,6 +430,23 @@ export default function Chat() {
           {isRecording ? '🔴 Запись...' : '🎤'}
         </button>
       </div>
+
+      {toast && (
+        <div style={{
+          position: 'fixed',
+          bottom: '20px',
+          right: '20px',
+          background: toast.type === 'error' ? '#f44336' : '#4caf50',
+          color: 'white',
+          padding: '12px 20px',
+          borderRadius: '8px',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
+          zIndex: 1000,
+          animation: 'fadeInOut 3s'
+        }}>
+          {toast.message}
+        </div>
+      )}
     </div>
   );
 }
