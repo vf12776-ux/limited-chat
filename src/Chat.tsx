@@ -64,11 +64,11 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pendingMessagesRef = useRef<Message[]>([]);
   const reconnectAttemptsRef = useRef(0);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectTimeoutRef = useRef<any>();
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const pendingFilesRef = useRef<PendingFile[]>([]);
-  const retryIntervalRef = useRef<ReturnType<typeof setInterval>>();
+  const retryIntervalRef = useRef<any>();
   // iOS prompt
   useEffect(() => {
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
@@ -312,13 +312,13 @@ export default function Chat() {
   // Регулярная попытка отправить файлы
   useEffect(() => {
     if (isJoined) {
-      retryIntervalRef.current = setInterval(() => {
-        if (navigator.onLine) {
-          const toRetry = [...pendingFilesRef.current];
-          pendingFilesRef.current = [];
-          toRetry.forEach(f => uploadFileWithRetry(f.formData, f.fileName, f.id, f.retryCount));
-        }
-      }, 30000);
+      retryIntervalRef.current = window.setInterval(() => {
+  if (navigator.onLine) {
+    const toRetry = [...pendingFilesRef.current];
+    pendingFilesRef.current = [];
+    toRetry.forEach(f => uploadFileWithRetry(f.formData, f.fileName, f.id, f.retryCount));
+  }
+}, 30000);
     }
     return () => clearInterval(retryIntervalRef.current);
   }, [isJoined]);
