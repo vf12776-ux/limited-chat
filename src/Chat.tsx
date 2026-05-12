@@ -4,6 +4,7 @@ interface Message {
   id: string;
   username: string;
   text: string;
+  room?: string;
   isFile?: boolean;
   fileUrl?: string;
   fileName?: string;
@@ -18,7 +19,8 @@ interface PendingFile {
   fileName: string;
   retryCount: number;
 }
-// Компонент-подсказка для установки на iOS
+
+// Компонент подсказки для iOS
 const IOSInstallPrompt = ({ onClose }: { onClose: () => void }) => {
   const [visible, setVisible] = useState(true);
   if (!visible) return null;
@@ -39,11 +41,10 @@ const IOSInstallPrompt = ({ onClose }: { onClose: () => void }) => {
       alignItems: 'center',
       gap: '10px',
       fontSize: '14px',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
     }}>
       <div style={{ fontWeight: 'bold' }}>📱 Установите приложение</div>
       <div style={{ textAlign: 'center' }}>Нажмите «Поделиться» → «На экран „Домой“»</div>
-      <button onClick={() => { setVisible(false); onClose(); }} style={{ background: '#007aff', border: 'none', color: 'white', padding: '6px 20px', borderRadius: '20px', fontSize: '14px', cursor: 'pointer' }}>Понятно</button>
+      <button onClick={() => { setVisible(false); onClose(); }} style={{ background: '#007aff', border: 'none', color: 'white', padding: '6px 20px', borderRadius: '20px', cursor: 'pointer' }}>Понятно</button>
     </div>
   );
 };
@@ -55,7 +56,11 @@ export default function Chat() {
   const [isConnected, setIsConnected] = useState(false);
   const [isJoined, setIsJoined] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [currentRoom, setCurrentRoom] = useState('public');
+  const [roomsList, setRoomsList] = useState<string[]>(['public']);
+  const [newPrivateChatUser, setNewPrivateChatUser] = useState('');
   const [showIOSPrompt, setShowIOSPrompt] = useState(false);
+  
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pendingMessagesRef = useRef<Message[]>([]);
@@ -66,7 +71,20 @@ export default function Chat() {
   const pendingFilesRef = useRef<PendingFile[]>([]);
   const retryIntervalRef = useRef<number>();
 
-  // ----- WebSocket (без изменений) -----
+  // iOS prompt logic
+  useEffect(() => {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
+    if (isIOS && !isStandalone && !localStorage.getItem('iosPromptClosed')) {
+      setShowIOSPrompt(true);
+    }
+  }, []);
+
+  const closeIOSPrompt = () => {
+    setShowIOSPrompt(false);
+    localStorage.setItem('iosPromptClosed', 'true');
+  };
+
   const connectWebSocket = () => {
     if (!isJoined) return;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -104,6 +122,12 @@ export default function Chat() {
         );
       } else if (data.type === 'clear_chat') {
         setMessages([]);
+      } else if (data.type === 'joined') {
+        // после переключения комнаты
+        setCurrentRoom(data.Room);
+        setMessages([]); // очистка будет перезаписана историей, которую сервер пришлёт отдельно
+      } else if (data.type === 'connected') {
+        console.log(data.Text);
       }
     };
 
@@ -128,25 +152,12 @@ export default function Chat() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
-  useEffect(() => {
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
-  const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
-  if (isIOS && !isStandalone && !localStorage.getItem('iosPromptClosed')) {
-    setShowIOSPrompt(true);
-  }
-}, []);
 
-const closeIOSPrompt = () => {
-  setShowIOSPrompt(false);
-  localStorage.setItem('iosPromptClosed', 'true');
-};
-
-  // ----- Очередь файлов с повторными попытками (без прогресс-бара) -----
+  // ----- Файлы с ретраем -----
   const uploadFileWithRetry = async (formData: FormData, fileName: string, tempId: string, retries: number) => {
     try {
       const response = await fetch('/upload', { method: 'POST', body: formData });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      // Успех
       pendingFilesRef.current = pendingFilesRef.current.filter(f => f.id !== tempId);
       setMessages(prev =>
         prev.map(msg =>
@@ -156,7 +167,6 @@ const closeIOSPrompt = () => {
     } catch (err) {
       if (retries < 5) {
         pendingFilesRef.current.push({ id: tempId, formData, fileName, retryCount: retries + 1 });
-        console.log(`Retry ${retries + 1}/5 for ${fileName}`);
       } else {
         setMessages(prev =>
           prev.map(msg =>
@@ -171,8 +181,8 @@ const closeIOSPrompt = () => {
     if (pendingFilesRef.current.length === 0) return;
     const toRetry = [...pendingFilesRef.current];
     pendingFilesRef.current = [];
-    for (const fileItem of toRetry) {
-      await uploadFileWithRetry(fileItem.formData, fileItem.fileName, fileItem.id, fileItem.retryCount);
+    for (const item of toRetry) {
+      await uploadFileWithRetry(item.formData, item.fileName, item.id, item.retryCount);
     }
   };
 
@@ -183,6 +193,7 @@ const closeIOSPrompt = () => {
       id: tempId,
       username,
       text: displayName,
+      room: currentRoom,
       isFile: true,
       fileName: file.name,
       fileUrl: '',
@@ -190,21 +201,21 @@ const closeIOSPrompt = () => {
       status: 'pending',
     };
     setMessages(prev => [...prev, tmpMsg]);
-
     const formData = new FormData();
     formData.append('file', file);
     formData.append('username', username);
+    formData.append('room', currentRoom);
     pendingFilesRef.current.push({ id: tempId, formData, fileName: file.name, retryCount: 0 });
     await uploadFileWithRetry(formData, file.name, tempId, 0);
   };
 
-  // ----- Текстовые сообщения -----
   const sendMessage = (text: string, isFile = false, fileUrl = '', fileName = '') => {
     const msg: Message = {
       id: Date.now().toString() + Math.random(),
       type: 'msg',
       username,
       text,
+      room: currentRoom,
       isFile,
       fileUrl,
       fileName,
@@ -242,6 +253,7 @@ const closeIOSPrompt = () => {
     e.target.value = '';
   };
 
+  // Голосовые сообщения
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -275,19 +287,44 @@ const closeIOSPrompt = () => {
     }
   };
 
+  // Переключение комнаты
+  const switchRoom = (room: string) => {
+    if (room === currentRoom) return;
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'join', room }));
+    }
+    setCurrentRoom(room);
+  };
+
+  // Создание приватного чата (сортировка имён для каноничности)
+  const createPrivateChat = () => {
+    const other = newPrivateChatUser.trim();
+    if (!other || other === username) {
+      alert('Введите имя другого участника');
+      return;
+    }
+    const sorted = [username, other].sort();
+    const privateRoom = `private_${sorted[0]}_${sorted[1]}`;
+    if (!roomsList.includes(privateRoom)) {
+      setRoomsList([...roomsList, privateRoom]);
+    }
+    switchRoom(privateRoom);
+    setNewPrivateChatUser('');
+  };
+
   const isImageFile = (fileName?: string): boolean => {
     if (!fileName) return false;
     const ext = fileName.split('.').pop()?.toLowerCase();
-    return ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'gif' || ext === 'webp';
+    return ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext || '');
   };
 
   const isAudioFile = (fileName?: string): boolean => {
     if (!fileName) return false;
     const ext = fileName.split('.').pop()?.toLowerCase();
-    return ext === 'webm' || ext === 'mp3' || ext === 'wav' || ext === 'ogg';
+    return ['webm', 'mp3', 'wav', 'ogg'].includes(ext || '');
   };
 
-  // Периодическая попытка отправить файлы, если сеть есть
+  // Периодический ретрай файлов
   useEffect(() => {
     if (isJoined) {
       retryIntervalRef.current = window.setInterval(() => {
@@ -305,7 +342,6 @@ const closeIOSPrompt = () => {
     return () => window.removeEventListener('online', handleOnline);
   }, []);
 
-  // ----- Интерфейс -----
   if (!isJoined) {
     return (
       <div style={{ maxWidth: '400px', margin: '50px auto', textAlign: 'center' }}>
@@ -323,98 +359,136 @@ const closeIOSPrompt = () => {
   }
 
   return (
-    <div style={{ display: 'flex', height: '100vh', flexDirection: 'column', maxWidth: '1200px', margin: '0 auto' }}>
-      <div style={{ padding: '10px', background: '#f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-        <span>Чат: {username}</span>
-        <span style={{ fontSize: '12px', color: isConnected ? 'green' : 'red' }}>{isConnected ? '● Онлайн' : '○ Офлайн'}</span>
-        <button onClick={clearChat} style={{ background: '#dc3545', color: 'white', border: 'none', borderRadius: '20px', padding: '5px 12px', cursor: 'pointer' }}>
-          Очистить чат
-        </button>
-      </div>
-
-      <div style={{ flex: 1, overflowY: 'auto', padding: '10px', background: '#fff' }}>
-        {messages.map(msg => (
-          <div key={msg.id} style={{
-            marginBottom: '12px',
-            textAlign: msg.username === username ? 'right' : 'left',
-            display: 'flex',
-            alignItems: 'baseline',
-            gap: '8px',
-            flexWrap: 'wrap',
-            justifyContent: msg.username === username ? 'flex-end' : 'flex-start'
-          }}>
-            <div style={{
-              background: msg.username === username ? '#dcf8c5' : '#fff',
-              border: '1px solid #ddd',
-              borderRadius: '12px',
-              padding: '8px 12px',
-              maxWidth: '70%',
-              display: 'inline-block'
-            }}>
-              <div style={{ fontSize: '15px', fontWeight: 'bold', color: '#000', marginBottom: '4px' }}>
-                {msg.username}
-              </div>
-              {msg.isFile ? (
-                isImageFile(msg.fileName) ? (
-                  <img src={msg.fileUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '8px' }} />
-                ) : isAudioFile(msg.fileName) ? (
-                  <audio controls src={msg.fileUrl} style={{ minWidth: '200px' }} />
-                ) : (
-                  <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">{msg.fileName || msg.text}</a>
-                )
-              ) : (
-                <div>{msg.text}</div>
-              )}
-              <div style={{ fontSize: '10px', color: '#aaa', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                {new Date(msg.timestamp).toLocaleTimeString()}
-                {msg.username === username && (
-                  <span style={{ fontSize: '12px' }}>
-                    {msg.status === 'pending' ? '✓' : msg.status === 'sent' ? '✓✓' : ''}
-                  </span>
-                )}
-              </div>
+    <div style={{ display: 'flex', height: '100vh', maxWidth: '1400px', margin: '0 auto' }}>
+      {/* Боковая панель со списком диалогов */}
+      <div style={{ width: '260px', background: '#f8f9fa', borderRight: '1px solid #dee2e6', display: 'flex', flexDirection: 'column', padding: '12px' }}>
+        <div style={{ fontWeight: 'bold', marginBottom: '16px' }}>Диалоги</div>
+        <div style={{ marginBottom: '16px' }}>
+          <input
+            type="text"
+            placeholder="Имя для приватного чата"
+            value={newPrivateChatUser}
+            onChange={e => setNewPrivateChatUser(e.target.value)}
+            style={{ width: '100%', padding: '6px', marginBottom: '8px' }}
+          />
+          <button onClick={createPrivateChat} style={{ width: '100%', padding: '6px', background: '#28a745', color: 'white', border: 'none', borderRadius: '4px' }}>
+            + Приватный чат
+          </button>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {roomsList.map(room => (
+            <div
+              key={room}
+              onClick={() => switchRoom(room)}
+              style={{
+                padding: '10px',
+                marginBottom: '4px',
+                background: currentRoom === room ? '#e7f3ff' : 'transparent',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: currentRoom === room ? 'bold' : 'normal',
+              }}
+            >
+              {room === 'public' ? '🌍 Общий чат' : room.replace(/^private_/, '👤 ')}
             </div>
-            {msg.username === username && (
-              <button onClick={() => deleteMessage(msg.id)} style={{ background: 'none', border: 'none', color: 'red', cursor: 'pointer', fontSize: '18px' }}>🗑️</button>
-            )}
-          </div>
-        ))}
-        <div ref={messagesEndRef} />
+          ))}
+        </div>
       </div>
 
-      <div style={{ padding: '10px', background: '#f0f0f0', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-        <input
-          type="text"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleSendText()}
-          placeholder="Сообщение..."
-          style={{ flex: 1, padding: '10px', borderRadius: '20px', border: '1px solid #ccc' }}
-        />
-        <button onClick={handleSendText} style={{ padding: '10px 20px', borderRadius: '20px', border: 'none', background: '#007bff', color: 'white' }}>➤</button>
-        <label style={{ background: '#28a745', padding: '10px 15px', borderRadius: '20px', color: 'white', cursor: 'pointer' }}>
-          📎
-          <input type="file" onChange={handleFileUpload} style={{ display: 'none' }} />
-        </label>
-        <button
-          onMouseDown={startRecording}
-          onMouseUp={stopRecording}
-          onTouchStart={startRecording}
-          onTouchEnd={stopRecording}
-          style={{
-            background: isRecording ? '#dc3545' : '#ff9800',
-            padding: '10px 15px',
-            borderRadius: '20px',
-            border: 'none',
-            color: 'white',
-            cursor: 'pointer',
-            transition: 'background 0.2s'
-          }}
-        >
-          {isRecording ? '🔴 Запись...' : '🎤'}
-        </button>
-        {showIOSPrompt && <IOSInstallPrompt onClose={closeIOSPrompt} />}
+      {/* Основная область чата */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '10px', background: '#f0f0f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <span>Чат: {currentRoom === 'public' ? 'Общий' : currentRoom.replace(/^private_/, 'Приватный с ')}</span>
+          <span style={{ fontSize: '12px', color: isConnected ? 'green' : 'red' }}>{isConnected ? '● Онлайн' : '○ Офлайн'}</span>
+          <button onClick={clearChat} style={{ background: '#dc3545', color: 'white', border: 'none', borderRadius: '20px', padding: '5px 12px', cursor: 'pointer' }}>
+            Очистить чат
+          </button>
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '10px', background: '#fff' }}>
+          {messages.map(msg => (
+            <div key={msg.id} style={{
+              marginBottom: '12px',
+              textAlign: msg.username === username ? 'right' : 'left',
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: '8px',
+              flexWrap: 'wrap',
+              justifyContent: msg.username === username ? 'flex-end' : 'flex-start'
+            }}>
+              <div style={{
+                background: msg.username === username ? '#dcf8c5' : '#fff',
+                border: '1px solid #ddd',
+                borderRadius: '12px',
+                padding: '8px 12px',
+                maxWidth: '70%',
+                display: 'inline-block'
+              }}>
+                <div style={{ fontSize: '15px', fontWeight: 'bold', color: '#000', marginBottom: '4px' }}>
+                  {msg.username}
+                </div>
+                {msg.isFile ? (
+                  isImageFile(msg.fileName) ? (
+                    <img src={msg.fileUrl} alt={msg.fileName} style={{ maxWidth: '200px', maxHeight: '200px', borderRadius: '8px' }} />
+                  ) : isAudioFile(msg.fileName) ? (
+                    <audio controls src={msg.fileUrl} style={{ minWidth: '200px' }} />
+                  ) : (
+                    <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">{msg.fileName || msg.text}</a>
+                  )
+                ) : (
+                  <div>{msg.text}</div>
+                )}
+                <div style={{ fontSize: '10px', color: '#aaa', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  {new Date(msg.timestamp).toLocaleTimeString()}
+                  {msg.username === username && (
+                    <span style={{ fontSize: '12px' }}>
+                      {msg.status === 'pending' ? '✓' : msg.status === 'sent' ? '✓✓' : ''}
+                    </span>
+                  )}
+                </div>
+              </div>
+              {msg.username === username && (
+                <button onClick={() => deleteMessage(msg.id)} style={{ background: 'none', border: 'none', color: 'red', cursor: 'pointer', fontSize: '18px' }}>🗑️</button>
+              )}
+            </div>
+          ))}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <div style={{ padding: '10px', background: '#f0f0f0', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <input
+            type="text"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleSendText()}
+            placeholder="Сообщение..."
+            style={{ flex: 1, padding: '10px', borderRadius: '20px', border: '1px solid #ccc' }}
+          />
+          <button onClick={handleSendText} style={{ padding: '10px 20px', borderRadius: '20px', border: 'none', background: '#007bff', color: 'white' }}>➤</button>
+          <label style={{ background: '#28a745', padding: '10px 15px', borderRadius: '20px', color: 'white', cursor: 'pointer' }}>
+            📎
+            <input type="file" onChange={handleFileUpload} style={{ display: 'none' }} />
+          </label>
+          <button
+            onMouseDown={startRecording}
+            onMouseUp={stopRecording}
+            onTouchStart={startRecording}
+            onTouchEnd={stopRecording}
+            style={{
+              background: isRecording ? '#dc3545' : '#ff9800',
+              padding: '10px 15px',
+              borderRadius: '20px',
+              border: 'none',
+              color: 'white',
+              cursor: 'pointer',
+            }}
+          >
+            {isRecording ? '🔴 Запись...' : '🎤'}
+          </button>
+        </div>
       </div>
+
+      {showIOSPrompt && <IOSInstallPrompt onClose={closeIOSPrompt} />}
     </div>
   );
 }
