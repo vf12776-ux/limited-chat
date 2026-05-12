@@ -64,12 +64,11 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pendingMessagesRef = useRef<Message[]>([]);
   const reconnectAttemptsRef = useRef(0);
-  const reconnectTimeoutRef = useRef<number>();
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const pendingFilesRef = useRef<PendingFile[]>([]);
-  const retryIntervalRef = useRef<number>();
-
+  const retryIntervalRef = useRef<ReturnType<typeof setInterval>>();
   // iOS prompt
   useEffect(() => {
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
