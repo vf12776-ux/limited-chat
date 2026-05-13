@@ -14,18 +14,20 @@ const App: React.FC = () => {
 
   if (!username) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
-        <form onSubmit={handleJoin} style={{ textAlign: 'center' }}>
-          <h2>Введите ваше имя</h2>
-          <input
-            type="text"
-            value={inputName}
-            onChange={(e) => setInputName(e.target.value)}
-            autoFocus
-            style={{ padding: '10px', fontSize: '16px', marginRight: '10px' }}
-          />
-          <button type="submit" style={{ padding: '10px 20px', fontSize: '16px' }}>Войти</button>
-        </form>
+      <div className="login-container">
+        <div className="login-box">
+          <h1>Мессенджер</h1>
+          <form onSubmit={handleJoin}>
+            <input
+              type="text"
+              placeholder="Введите ваше имя"
+              value={inputName}
+              onChange={(e) => setInputName(e.target.value)}
+              autoFocus
+            />
+            <button type="submit">Войти</button>
+          </form>
+        </div>
       </div>
     );
   }
