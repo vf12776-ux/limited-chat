@@ -10,7 +10,7 @@ html, body, #root {
     font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 
-/* --- ФОРМА ВХОДА --- */
+/* ФОРМА ВХОДА */
 .login-container {
     display: flex;
     align-items: center;
@@ -49,7 +49,7 @@ html, body, #root {
     cursor: pointer;
 }
 
-/* --- ЧАТ --- */
+/* ЧАТ */
 .chat-container {
     display: flex;
     height: 100%;
@@ -159,12 +159,13 @@ html, body, #root {
     font-size: 18px;
     margin: 0;
 }
-.clear-chat-btn {
+.clear-chat-btn, .theme-toggle-btn {
     background: none;
     border: none;
-    font-size: 14px;
-    color: #ff3b30;
+    font-size: 20px;
     cursor: pointer;
+    padding: 0 8px;
+    color: inherit;
 }
 .messages-area {
     flex: 1;
@@ -223,7 +224,7 @@ html, body, #root {
     border: 1px solid #ccc;
     border-radius: 24px;
     font-size: 16px;
-    min-width: 0; /* важно для flex */
+    min-width: 0;
 }
 .input-area button {
     width: 48px;
@@ -258,6 +259,18 @@ html, body, #root {
     box-shadow: 0 2px 5px rgba(0,0,0,0.2);
 }
 
+/* Отступ заголовка от гамбургера на телефонах */
+@media (max-width: 767px) {
+    .chat-header {
+        padding-left: 60px;
+    }
+    .menu-btn {
+        left: 8px;
+        top: 8px;
+    }
+}
+
+/* Десктоп */
 @media (min-width: 768px) {
     .sidebar {
         position: relative;
@@ -274,4 +287,61 @@ html, body, #root {
     .chat-main {
         width: calc(100% - 280px);
     }
+}
+
+/* === ТЁМНАЯ ТЕМА === */
+.dark-theme {
+    background: #121212;
+    color: #e0e0e0;
+}
+.dark-theme .chat-main,
+.dark-theme .messages-area {
+    background: #1e1e1e;
+}
+.dark-theme .chat-header,
+.dark-theme .sidebar,
+.dark-theme .input-area,
+.dark-theme .message {
+    background: #2c2c2c;
+    color: #e0e0e0;
+    border-color: #444;
+}
+.dark-theme .message.own {
+    background: #0b3b2f;
+}
+.dark-theme .input-area input[type="text"] {
+    background: #3a3a3a;
+    border-color: #555;
+    color: white;
+}
+.dark-theme .input-area button,
+.dark-theme .menu-btn,
+.dark-theme .new-chat-btn {
+    background: #0a84ff;
+}
+.dark-theme .voice-btn {
+    background: #ff9f0a !important;
+}
+.dark-theme .room-item.active {
+    background: #1e3a5f;
+}
+.dark-theme .room-item {
+    border-bottom-color: #444;
+}
+.dark-theme .close-sidebar,
+.dark-theme .delete-btn,
+.dark-theme .clear-chat-btn {
+    color: #ff453a;
+}
+.dark-theme .unread-badge {
+    background: #ff453a;
+}
+.dark-theme .login-box {
+    background: #2c2c2c;
+    color: white;
+}
+.dark-theme .login-box input {
+    background: #3a3a3a;
+    color: white;
+    border-color: #555;
 }

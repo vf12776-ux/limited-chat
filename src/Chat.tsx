@@ -11,11 +11,11 @@ const Chat: React.FC<{ username: string }> = ({ username }) => {
     const [rooms, setRooms] = useState<string[]>(['public']);
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [unread, setUnread] = useState<Record<string, number>>({});
+    const [darkTheme, setDarkTheme] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const [pendingMessages, setPendingMessages] = useState<any[]>([]);
 
-    // Отправка с очередью
     const sendWsMessage = (data: any) => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify(data));
@@ -26,7 +26,6 @@ const Chat: React.FC<{ username: string }> = ({ username }) => {
         }
     };
 
-    // Повтор при восстановлении
     useEffect(() => {
         if (ws && ws.readyState === WebSocket.OPEN && pendingMessages.length) {
             const toSend = [...pendingMessages];
@@ -35,7 +34,6 @@ const Chat: React.FC<{ username: string }> = ({ username }) => {
         }
     }, [ws, pendingMessages]);
 
-    // Подключение
     useEffect(() => {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws`;
@@ -48,30 +46,23 @@ const Chat: React.FC<{ username: string }> = ({ username }) => {
 
         socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            // Обработка ack
             if (data.type === 'ack') {
                 setMessages(prev => prev.map(msg => msg.id === data.id ? { ...msg, status: 'sent' } : msg));
             }
-            // Обычные сообщения (в том числе история)
             else if (data.type === 'msg' || data.type === 'image' || data.type === 'file' || (data.id && data.username)) {
-                // Нормализуем: если нет type, но есть id и username — считаем msg
-                const msg = { ...data, type: data.type || 'msg' };
-                if (!msg.status) msg.status = 'sent';
+                const msg = { ...data, type: data.type || 'msg', status: data.status || 'sent' };
                 if (msg.room === currentRoom) {
                     setMessages(prev => [...prev, msg]);
                 } else if (msg.room) {
                     setUnread(prev => ({ ...prev, [msg.room]: (prev[msg.room] || 0) + 1 }));
                 }
             }
-            // Удаление
             else if (data.type === 'delete') {
                 setMessages(prev => prev.filter(m => m.id !== data.id));
             }
-            // Очистка чата
             else if (data.type === 'clear_chat') {
                 setMessages([]);
             }
-            // Подтверждение переключения комнаты
             else if (data.type === 'joined') {
                 setCurrentRoom(data.room);
                 setMessages([]);
@@ -194,14 +185,16 @@ const Chat: React.FC<{ username: string }> = ({ username }) => {
     };
 
     const getRoomDisplayName = (room: string) => {
-        if (room === 'public') return '🌍 Общий чат';
+        if (room === 'public') return 'Общий чат';
         const match = room.match(/^private_(.+)_(.+)$/);
-        if (match) return `👤 ${match[1] === username ? match[2] : match[1]}`;
+        if (match) return `Чат с ${match[1] === username ? match[2] : match[1]}`;
         return room;
     };
 
+    const toggleTheme = () => setDarkTheme(prev => !prev);
+
     return (
-        <div className="chat-container">
+        <div className={`chat-container ${darkTheme ? 'dark-theme' : ''}`}>
             <button className="menu-btn" onClick={() => setSidebarOpen(true)}>☰</button>
             <div className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
                 <div className="sidebar-header">
@@ -222,7 +215,10 @@ const Chat: React.FC<{ username: string }> = ({ username }) => {
             <div className="chat-main">
                 <div className="chat-header">
                     <h2>{getRoomDisplayName(currentRoom)}</h2>
-                    <button className="clear-chat-btn" onClick={clearChat}>🗑️ Очистить</button>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                        <button onClick={toggleTheme} className="theme-toggle-btn">{darkTheme ? '☀️' : '🌙'}</button>
+                        <button className="clear-chat-btn" onClick={clearChat}>🗑️ Очистить</button>
+                    </div>
                 </div>
                 <div className="messages-area">
                     {messages.map((msg) => (
