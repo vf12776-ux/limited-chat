@@ -22,7 +22,6 @@ type Message struct {
 	ID        string `json:"id"`
 	Username  string `json:"username"`
 	Text      string `json:"text"`
-	Room      string `json:"room,omitempty"`
 	IsFile    bool   `json:"isFile,omitempty"`
 	FileUrl   string `json:"fileUrl,omitempty"`
 	FileName  string `json:"fileName,omitempty"`
@@ -33,13 +32,13 @@ type Message struct {
 type Client struct {
 	conn     *websocket.Conn
 	username string
-	room     string
 }
 
 var (
-	rooms = make(map[string]map[*Client]bool)
-	mu    sync.Mutex
-	db    *sql.DB
+	clients   = make(map[*Client]bool)
+	mu        sync.Mutex
+	broadcast = make(chan Message)
+	db        *sql.DB
 )
 
 func initDB() {
@@ -56,26 +55,24 @@ func initDB() {
 		id TEXT PRIMARY KEY,
 		username TEXT,
 		text TEXT,
-		room TEXT DEFAULT 'public',
 		is_file BOOLEAN,
 		file_name TEXT,
 		file_data BYTEA,
 		type TEXT,
 		timestamp BIGINT
 	)`)
-	db.Exec(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS room TEXT DEFAULT 'public'`)
 }
 
 func saveMessageToDB(m Message, fileData []byte) error {
-	_, err := db.Exec(
-		`INSERT INTO messages(id, username, text, room, is_file, file_name, file_data, type, timestamp)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		m.ID, m.Username, m.Text, m.Room, m.IsFile, m.FileName, fileData, m.Type, m.Timestamp)
+	_, err := db.Exec(`
+		INSERT INTO messages(id, username, text, is_file, file_name, file_data, type, timestamp)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+		m.ID, m.Username, m.Text, m.IsFile, m.FileName, fileData, m.Type, m.Timestamp)
 	return err
 }
 
-func loadHistory(room string) []Message {
-	rows, err := db.Query(`SELECT id, username, text, is_file, file_name, type, timestamp FROM messages WHERE room=$1 ORDER BY timestamp ASC`, room)
+func loadHistory() []Message {
+	rows, err := db.Query(`SELECT id, username, text, is_file, file_name, type, timestamp FROM messages ORDER BY timestamp ASC`)
 	if err != nil {
 		return nil
 	}
@@ -87,7 +84,6 @@ func loadHistory(room string) []Message {
 		if m.IsFile {
 			m.FileUrl = "/api/file/" + m.ID
 		}
-		m.Room = room
 		msgs = append(msgs, m)
 	}
 	return msgs
@@ -96,6 +92,7 @@ func loadHistory(room string) []Message {
 func main() {
 	initDB()
 	defer db.Close()
+	go handleMessages()
 
 	http.HandleFunc("/ws", wsHandler)
 	http.HandleFunc("/upload", uploadHandler)
@@ -118,90 +115,57 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	var hello Message
-	if err := conn.ReadJSON(&hello); err != nil || hello.Type != "hello" || hello.Username == "" {
+	var initMsg Message
+	if err := conn.ReadJSON(&initMsg); err != nil || initMsg.Type != "hello" || initMsg.Username == "" {
 		return
 	}
 
-	client := &Client{conn: conn, username: hello.Username, room: "public"}
+	client := &Client{conn: conn, username: initMsg.Username}
 	mu.Lock()
-	if rooms["public"] == nil {
-		rooms["public"] = make(map[*Client]bool)
-	}
-	rooms["public"][client] = true
+	clients[client] = true
 	mu.Unlock()
 
-	for _, msg := range loadHistory("public") {
+	for _, msg := range loadHistory() {
 		conn.WriteJSON(msg)
 	}
 
 	for {
-		var msg Message
-		err := conn.ReadJSON(&msg)
+		var incoming Message
+		err := conn.ReadJSON(&incoming)
 		if err != nil {
 			mu.Lock()
-			delete(rooms[client.room], client)
+			delete(clients, client)
 			mu.Unlock()
 			break
 		}
-		msg.Username = client.username
-		if msg.ID == "" {
-			msg.ID = uuid.New().String()
+		incoming.Username = client.username
+		if incoming.ID == "" {
+			incoming.ID = uuid.New().String()
 		}
-		if msg.Timestamp == 0 {
-			msg.Timestamp = time.Now().Unix()
+		if incoming.Timestamp == 0 {
+			incoming.Timestamp = time.Now().Unix()
 		}
 
-		switch msg.Type {
-		case "msg":
-			room := msg.Room
-			if room == "" {
-				room = "public"
-			}
-			msg.Room = room
-			saveMessageToDB(msg, nil)
-			conn.WriteJSON(Message{Type: "ack", ID: msg.ID})
-			mu.Lock()
-			for c := range rooms[room] {
-				c.conn.WriteJSON(msg)
-			}
-			mu.Unlock()
-
-		case "join":
-			newRoom := msg.Room
-			if newRoom == "" {
-				newRoom = "public"
-			}
-			mu.Lock()
-			delete(rooms[client.room], client)
-			if rooms[newRoom] == nil {
-				rooms[newRoom] = make(map[*Client]bool)
-			}
-			rooms[newRoom][client] = true
-			client.room = newRoom
-			mu.Unlock()
-			for _, m := range loadHistory(newRoom) {
-				conn.WriteJSON(m)
-			}
-			conn.WriteJSON(Message{Type: "joined", Room: newRoom})
-
-		case "delete":
+		if incoming.Type == "msg" {
+			saveMessageToDB(incoming, nil)
+			conn.WriteJSON(Message{Type: "ack", ID: incoming.ID})
+			broadcast <- incoming
+		} else if incoming.Type == "delete" {
 			var author string
-			db.QueryRow("SELECT username FROM messages WHERE id=$1", msg.ID).Scan(&author)
+			db.QueryRow("SELECT username FROM messages WHERE id=$1", incoming.ID).Scan(&author)
 			if author == client.username {
-				db.Exec("DELETE FROM messages WHERE id=$1", msg.ID)
+				db.Exec("DELETE FROM messages WHERE id=$1", incoming.ID)
 				mu.Lock()
-				for c := range rooms[client.room] {
-					c.conn.WriteJSON(Message{Type: "delete", ID: msg.ID})
+				for c := range clients {
+					c.conn.WriteJSON(Message{Type: "delete", ID: incoming.ID})
 				}
 				mu.Unlock()
 			}
-
-		case "clear_chat":
+		} else if incoming.Type == "clear_chat" {
 			if client.username != "" {
-				db.Exec("DELETE FROM messages WHERE room=$1", client.room)
+				db.Exec("DELETE FROM messages")
 				mu.Lock()
-				for c := range rooms[client.room] {
+				for c := range clients {
 					c.conn.WriteJSON(Message{Type: "clear_chat"})
 				}
 				mu.Unlock()
@@ -210,37 +174,42 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func handleMessages() {
+	for msg := range broadcast {
+		mu.Lock()
+		for c := range clients {
+			c.conn.WriteJSON(msg)
+		}
+		mu.Unlock()
+	}
+}
+
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "", http.StatusMethodNotAllowed)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	username := r.FormValue("username")
-	room := r.FormValue("room")
 	if username == "" {
-		http.Error(w, "no username", http.StatusBadRequest)
+		http.Error(w, "username required", http.StatusBadRequest)
 		return
-	}
-	if room == "" {
-		room = "public"
 	}
 	r.ParseMultipartForm(10 << 20)
 	file, handler, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "", http.StatusBadRequest)
+		http.Error(w, "File error", http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
 	data, err := io.ReadAll(file)
 	if err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
+		http.Error(w, "Read error", http.StatusInternalServerError)
 		return
 	}
 	msg := Message{
 		ID:        uuid.New().String(),
 		Username:  username,
 		Text:      handler.Filename,
-		Room:      room,
 		IsFile:    true,
 		FileName:  handler.Filename,
 		Type:      "msg",
@@ -248,11 +217,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	saveMessageToDB(msg, data)
 	msg.FileUrl = "/api/file/" + msg.ID
-	mu.Lock()
-	for c := range rooms[room] {
-		c.conn.WriteJSON(msg)
-	}
-	mu.Unlock()
+	broadcast <- msg
 	w.Write([]byte(msg.FileUrl))
 }
 
@@ -262,10 +227,10 @@ func fileHandler(w http.ResponseWriter, r *http.Request) {
 	var fileName string
 	err := db.QueryRow("SELECT file_data, file_name FROM messages WHERE id=$1", id).Scan(&data, &fileName)
 	if err != nil {
-		http.Error(w, "", http.StatusNotFound)
+		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
-	ext := filepath.Ext(fileName)
+	ext := strings.ToLower(filepath.Ext(fileName))
 	ctype := "application/octet-stream"
 	if ext == ".jpg" || ext == ".jpeg" {
 		ctype = "image/jpeg"
