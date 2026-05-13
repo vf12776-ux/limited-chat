@@ -21,7 +21,7 @@ const Chat: React.FC<{ username: string }> = ({ username }) => {
             ws.send(JSON.stringify(data));
             return true;
         } else {
-            setPendingMessages(prev => [...prev, { ...data, retries: 0 }]);
+            setPendingMessages(prev => [...prev, data]);
             return false;
         }
     };
@@ -47,10 +47,9 @@ const Chat: React.FC<{ username: string }> = ({ username }) => {
         socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
             if (data.type === 'ack') {
-                setMessages(prev => prev.map(msg => msg.id === data.id ? { ...msg, status: 'sent' } : msg));
-            }
-            else if (data.type === 'msg' || data.type === 'image' || data.type === 'file' || (data.id && data.username)) {
-                const msg = { ...data, type: data.type || 'msg', status: data.status || 'sent' };
+                setMessages(prev => prev.map(m => m.id === data.id ? { ...m, status: 'sent' } : m));
+            } else if (data.type === 'msg' || data.type === 'image' || data.type === 'file' || (data.id && data.username)) {
+                const msg = { ...data, status: 'sent' };
                 setMessages(prev => {
                     if (prev.some(m => m.id === msg.id)) return prev;
                     return [...prev, msg];
@@ -58,14 +57,11 @@ const Chat: React.FC<{ username: string }> = ({ username }) => {
                 if (msg.room && msg.room !== currentRoom) {
                     setUnread(prev => ({ ...prev, [msg.room]: (prev[msg.room] || 0) + 1 }));
                 }
-            }
-            else if (data.type === 'delete') {
+            } else if (data.type === 'delete') {
                 setMessages(prev => prev.filter(m => m.id !== data.id));
-            }
-            else if (data.type === 'clear_chat') {
+            } else if (data.type === 'clear_chat') {
                 setMessages([]);
-            }
-            else if (data.type === 'joined') {
+            } else if (data.type === 'joined') {
                 setCurrentRoom(data.room);
                 setMessages([]);
             }
@@ -73,8 +69,7 @@ const Chat: React.FC<{ username: string }> = ({ username }) => {
 
         socket.onclose = () => {
             setTimeout(() => {
-                const newSocket = new WebSocket(wsUrl);
-                setWs(newSocket);
+                setWs(null);
             }, 3000);
         };
 

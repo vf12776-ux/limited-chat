@@ -63,25 +63,21 @@ func initDB() {
 		type TEXT,
 		timestamp BIGINT
 	)`)
-	if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS room TEXT DEFAULT 'public'`); err != nil {
-		log.Println("Warning: adding room column:", err)
-	} else {
-		log.Println("Room column ready")
-	}
+	db.Exec(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS room TEXT DEFAULT 'public'`)
 }
 
 func saveMessage(m Message, fileData []byte) error {
 	_, err := db.Exec(
 		`INSERT INTO messages(id, username, text, room, is_file, file_name, file_data, type, timestamp)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		m.ID, m.Username, m.Text, m.Room, m.IsFile, m.FileName, fileData, m.Type, m.Timestamp)
+		m.ID, m.Username, m.Text, m.Room, m.IsFile, m.FileName, fileData, m.Type, m.Timestamp,
+	)
 	return err
 }
 
 func loadHistory(room string) []Message {
 	rows, err := db.Query(`SELECT id, username, text, is_file, file_name, type, timestamp FROM messages WHERE room=$1 ORDER BY timestamp ASC`, room)
 	if err != nil {
-		log.Println("loadHistory error:", err)
 		return nil
 	}
 	defer rows.Close()
@@ -106,8 +102,8 @@ func main() {
 	http.HandleFunc("/upload", uploadHandler)
 	http.HandleFunc("/api/file/", fileHandler)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("OK")) })
-
 	http.Handle("/", http.FileServer(http.Dir("dist")))
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -272,13 +268,14 @@ func fileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	ext := filepath.Ext(fileName)
 	ctype := "application/octet-stream"
-	if ext == ".jpg" || ext == ".jpeg" {
+	switch ext {
+	case ".jpg", ".jpeg":
 		ctype = "image/jpeg"
-	} else if ext == ".png" {
+	case ".png":
 		ctype = "image/png"
-	} else if ext == ".gif" {
+	case ".gif":
 		ctype = "image/gif"
-	} else if ext == ".webm" {
+	case ".webm":
 		ctype = "audio/webm"
 	}
 	w.Header().Set("Content-Type", ctype)
