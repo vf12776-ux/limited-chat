@@ -52,7 +52,7 @@ func initDB() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// Создаём таблицу с колонкой room
+	// Таблица с полем room
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS messages (
 		id TEXT PRIMARY KEY,
 		username TEXT,
@@ -67,7 +67,7 @@ func initDB() {
 	if err != nil {
 		log.Fatal("Create table error:", err)
 	}
-	// Добавляем колонку room, если её нет
+	// Добавляем колонку room, если её нет (миграция)
 	_, err = db.Exec(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS room TEXT DEFAULT 'public'`)
 	if err != nil {
 		log.Println("Warning: adding room column:", err)
@@ -88,7 +88,7 @@ func loadHistory(room string) []Message {
 		SELECT id, username, text, is_file, file_name, type, timestamp
 		FROM messages WHERE room = $1 ORDER BY timestamp ASC`, room)
 	if err != nil {
-		log.Println("LoadHistory error:", err)
+		log.Println("loadHistory error:", err)
 		return nil
 	}
 	defer rows.Close()
@@ -97,7 +97,7 @@ func loadHistory(room string) []Message {
 		var m Message
 		err := rows.Scan(&m.ID, &m.Username, &m.Text, &m.IsFile, &m.FileName, &m.Type, &m.Timestamp)
 		if err != nil {
-			log.Println("Scan error:", err)
+			log.Println("scan error:", err)
 			continue
 		}
 		if m.IsFile {
@@ -178,9 +178,9 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			incoming.Room = room
 			// Сохраняем в БД
 			if err := saveMessageToDB(incoming, nil); err != nil {
-				log.Println("Save error:", err)
+				log.Printf("DB save error: %v", err)
 			}
-			// Подтверждение отправителю
+			// Подтверждение
 			conn.WriteJSON(Message{Type: "ack", ID: incoming.ID})
 			// Рассылаем всем в этой комнате
 			mu.Lock()
