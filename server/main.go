@@ -52,7 +52,8 @@ func initDB() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	db.Exec(`CREATE TABLE IF NOT EXISTS messages (
+	// Создаём таблицу с колонкой room
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS messages (
 		id TEXT PRIMARY KEY,
 		username TEXT,
 		text TEXT,
@@ -63,7 +64,15 @@ func initDB() {
 		type TEXT,
 		timestamp BIGINT
 	)`)
-	db.Exec(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS room TEXT DEFAULT 'public'`)
+	if err != nil {
+		log.Fatal("Create table error:", err)
+	}
+	// Добавляем колонку room, если её нет
+	_, err = db.Exec(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS room TEXT DEFAULT 'public'`)
+	if err != nil {
+		log.Println("Warning: adding room column:", err)
+	}
+	log.Println("Database initialized")
 }
 
 func saveMessageToDB(m Message, fileData []byte) error {
@@ -75,15 +84,22 @@ func saveMessageToDB(m Message, fileData []byte) error {
 }
 
 func loadHistory(room string) []Message {
-	rows, err := db.Query(`SELECT id, username, text, is_file, file_name, type, timestamp FROM messages WHERE room=$1 ORDER BY timestamp ASC`, room)
+	rows, err := db.Query(`
+		SELECT id, username, text, is_file, file_name, type, timestamp
+		FROM messages WHERE room = $1 ORDER BY timestamp ASC`, room)
 	if err != nil {
+		log.Println("LoadHistory error:", err)
 		return nil
 	}
 	defer rows.Close()
 	var msgs []Message
 	for rows.Next() {
 		var m Message
-		rows.Scan(&m.ID, &m.Username, &m.Text, &m.IsFile, &m.FileName, &m.Type, &m.Timestamp)
+		err := rows.Scan(&m.ID, &m.Username, &m.Text, &m.IsFile, &m.FileName, &m.Type, &m.Timestamp)
+		if err != nil {
+			log.Println("Scan error:", err)
+			continue
+		}
 		if m.IsFile {
 			m.FileUrl = "/api/file/" + m.ID
 		}
@@ -131,6 +147,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	rooms["public"][client] = true
 	mu.Unlock()
 
+	// Отправляем историю общего чата
 	for _, msg := range loadHistory("public") {
 		conn.WriteJSON(msg)
 	}
@@ -159,8 +176,13 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 				room = "public"
 			}
 			incoming.Room = room
-			saveMessageToDB(incoming, nil)
+			// Сохраняем в БД
+			if err := saveMessageToDB(incoming, nil); err != nil {
+				log.Println("Save error:", err)
+			}
+			// Подтверждение отправителю
 			conn.WriteJSON(Message{Type: "ack", ID: incoming.ID})
+			// Рассылаем всем в этой комнате
 			mu.Lock()
 			for c := range rooms[room] {
 				c.conn.WriteJSON(incoming)
@@ -180,6 +202,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			rooms[newRoom][client] = true
 			client.room = newRoom
 			mu.Unlock()
+			// Отправляем историю новой комнаты
 			for _, m := range loadHistory(newRoom) {
 				conn.WriteJSON(m)
 			}
@@ -246,7 +269,10 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		Type:      "msg",
 		Timestamp: time.Now().Unix(),
 	}
-	saveMessageToDB(msg, data)
+	if err := saveMessageToDB(msg, data); err != nil {
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
 	msg.FileUrl = "/api/file/" + msg.ID
 	mu.Lock()
 	for c := range rooms[room] {
