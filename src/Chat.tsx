@@ -228,12 +228,16 @@ const Chat: React.FC<{ username: string }> = ({ username }) => {
                             </div>
                             <div className="message-content">
                                 {msg.isFile ? (
-                                    msg.fileUrl ? (
-                                        msg.fileName?.match(/\.(jpg|jpeg|png|gif)$/i) ?
-                                            <img src={msg.fileUrl} alt="file" className="file-image" /> :
-                                            <a href={msg.fileUrl} download={msg.fileName}>{msg.fileName}</a>
-                                    ) : <span>Загрузка...</span>
-                                ) : <p>{msg.text}</p>}
+    msg.fileUrl ? (
+        msg.fileName?.match(/\.(jpg|jpeg|png|gif)$/i) ? (
+            <img src={msg.fileUrl} alt="file" className="file-image" />
+        ) : msg.fileName?.match(/\.webm$/i) ? (
+            <audio controls src={msg.fileUrl} className="audio-player" />
+        ) : (
+            <a href={msg.fileUrl} download={msg.fileName}>{msg.fileName}</a>
+        )
+    ) : <span>Загрузка...</span>
+) : <p>{msg.text}</p>}
                             </div>
                         </div>
                     ))}
