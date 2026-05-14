@@ -22,7 +22,7 @@ type Message struct {
 	ID        string `json:"id"`
 	Username  string `json:"username"`
 	Text      string `json:"text"`
-	Room      string `json:"room,omitempty"`
+	Room      string `json:"room,omitempty"` // ДОБАВЛЕНО
 	IsFile    bool   `json:"isFile,omitempty"`
 	FileUrl   string `json:"fileUrl,omitempty"`
 	FileName  string `json:"fileName,omitempty"`
@@ -33,11 +33,11 @@ type Message struct {
 type Client struct {
 	conn     *websocket.Conn
 	username string
-	room     string
+	room     string // ДОБАВЛЕНО
 }
 
 var (
-	rooms = make(map[string]map[*Client]bool)
+	rooms = make(map[string]map[*Client]bool) // ЗАМЕНА clients -> rooms
 	mu    sync.Mutex
 	db    *sql.DB
 )
@@ -52,8 +52,8 @@ func initDB() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// Таблица с полем room
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS messages (
+	// Добавлено поле room
+	db.Exec(`CREATE TABLE IF NOT EXISTS messages (
 		id TEXT PRIMARY KEY,
 		username TEXT,
 		text TEXT,
@@ -64,18 +64,12 @@ func initDB() {
 		type TEXT,
 		timestamp BIGINT
 	)`)
-	if err != nil {
-		log.Fatal("Create table error:", err)
-	}
-	// Добавляем колонку room, если её нет (миграция)
-	_, err = db.Exec(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS room TEXT DEFAULT 'public'`)
-	if err != nil {
-		log.Println("Warning: adding room column:", err)
-	}
-	log.Println("Database initialized")
+	// Миграция для старых БД
+	db.Exec(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS room TEXT DEFAULT 'public'`)
 }
 
 func saveMessageToDB(m Message, fileData []byte) error {
+	// Добавлено поле room в INSERT
 	_, err := db.Exec(`
 		INSERT INTO messages(id, username, text, room, is_file, file_name, file_data, type, timestamp)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
@@ -83,23 +77,18 @@ func saveMessageToDB(m Message, fileData []byte) error {
 	return err
 }
 
-func loadHistory(room string) []Message {
+func loadHistory(room string) []Message { // добавлен параметр room
 	rows, err := db.Query(`
 		SELECT id, username, text, is_file, file_name, type, timestamp
 		FROM messages WHERE room = $1 ORDER BY timestamp ASC`, room)
 	if err != nil {
-		log.Println("loadHistory error:", err)
 		return nil
 	}
 	defer rows.Close()
 	var msgs []Message
 	for rows.Next() {
 		var m Message
-		err := rows.Scan(&m.ID, &m.Username, &m.Text, &m.IsFile, &m.FileName, &m.Type, &m.Timestamp)
-		if err != nil {
-			log.Println("scan error:", err)
-			continue
-		}
+		rows.Scan(&m.ID, &m.Username, &m.Text, &m.IsFile, &m.FileName, &m.Type, &m.Timestamp)
 		if m.IsFile {
 			m.FileUrl = "/api/file/" + m.ID
 		}
@@ -117,8 +106,8 @@ func main() {
 	http.HandleFunc("/upload", uploadHandler)
 	http.HandleFunc("/api/file/", fileHandler)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("OK")) })
-
 	http.Handle("/", http.FileServer(http.Dir("dist")))
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -147,7 +136,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	rooms["public"][client] = true
 	mu.Unlock()
 
-	// Отправляем историю общего чата
+	// загружаем историю только для public
 	for _, msg := range loadHistory("public") {
 		conn.WriteJSON(msg)
 	}
@@ -173,19 +162,16 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		case "msg":
 			room := incoming.Room
 			if room == "" {
-				room = "public"
+				room = client.room // используем комнату клиента, если не передана
 			}
 			incoming.Room = room
-			// Сохраняем в БД
-			if err := saveMessageToDB(incoming, nil); err != nil {
-				log.Printf("DB save error: %v", err)
-			}
-			// Подтверждение
+			saveMessageToDB(incoming, nil)
 			conn.WriteJSON(Message{Type: "ack", ID: incoming.ID})
-			// Рассылаем всем в этой комнате
 			mu.Lock()
-			for c := range rooms[room] {
-				c.conn.WriteJSON(incoming)
+			if croom, ok := rooms[room]; ok {
+				for c := range croom {
+					c.conn.WriteJSON(incoming)
+				}
 			}
 			mu.Unlock()
 
@@ -269,14 +255,13 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		Type:      "msg",
 		Timestamp: time.Now().Unix(),
 	}
-	if err := saveMessageToDB(msg, data); err != nil {
-		http.Error(w, "DB error", http.StatusInternalServerError)
-		return
-	}
+	saveMessageToDB(msg, data)
 	msg.FileUrl = "/api/file/" + msg.ID
 	mu.Lock()
-	for c := range rooms[room] {
-		c.conn.WriteJSON(msg)
+	if rroom, ok := rooms[room]; ok {
+		for c := range rroom {
+			c.conn.WriteJSON(msg)
+		}
 	}
 	mu.Unlock()
 	w.Write([]byte(msg.FileUrl))
