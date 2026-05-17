@@ -99,7 +99,18 @@ func main() {
 	http.HandleFunc("/api/file/", fileHandler)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("OK")) })
 
-	http.Handle("/", http.FileServer(http.Dir("dist")))
+	spaHandler := http.FileServer(http.Dir("dist"))
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws") || strings.HasPrefix(r.URL.Path, "/upload") {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := os.Stat("dist" + r.URL.Path); err == nil {
+			spaHandler.ServeHTTP(w, r)
+			return
+		}
+		http.ServeFile(w, r, "dist/index.html")
+	})
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
