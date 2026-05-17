@@ -44,30 +44,48 @@ var (
 func initDB() {
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
-		log.Fatal("DATABASE_URL not set")
+		log.Fatal("FATAL: DATABASE_URL environment variable is not set")
 	}
+	log.Println("DB: connecting with DATABASE_URL")
 	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("FATAL: sql.Open failed: ", err)
 	}
-	db.Exec(`CREATE TABLE IF NOT EXISTS messages (
-id TEXT PRIMARY KEY,
-username TEXT,
-text TEXT,
-is_file BOOLEAN,
-file_name TEXT,
-file_data BYTEA,
-type TEXT,
-timestamp BIGINT
-)`)
+	if err = db.Ping(); err != nil {
+		log.Fatal("FATAL: database ping failed: ", err)
+	}
+	log.Println("DB: connected and ping successful")
+
+	// Создаём таблицу, если её нет
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS messages (
+		id TEXT PRIMARY KEY,
+		username TEXT,
+		text TEXT,
+		is_file BOOLEAN,
+		file_name TEXT,
+		file_data BYTEA,
+		type TEXT,
+		timestamp BIGINT
+	)`
+	if _, err = db.Exec(createTableSQL); err != nil {
+		log.Fatal("FATAL: failed to create table: ", err)
+	}
+	log.Println("DB: table 'messages' ready")
 }
 
 func saveMessageToDB(m Message, fileData []byte) error {
+	log.Printf("DB: saving message id=%s username=%s type=%s", m.ID, m.Username, m.Type)
 	_, err := db.Exec(`
-INSERT INTO messages(id, username, text, is_file, file_name, file_data, type, timestamp)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+		INSERT INTO messages(id, username, text, is_file, file_name, file_data, type, timestamp)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
 		m.ID, m.Username, m.Text, m.IsFile, m.FileName, fileData, m.Type, m.Timestamp)
+	if err != nil {
+		log.Printf("DB ERROR: failed to insert message %s: %v", m.ID, err)
+	} else {
+		log.Printf("DB: message %s saved successfully", m.ID)
+	}
 	return err
 }
 
