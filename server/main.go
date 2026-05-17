@@ -42,11 +42,10 @@ var (
 )
 
 func initDB() {
-	connStr := os.Getenv("DATABASE_URL")
-	if connStr == "" {
-		log.Fatal("FATAL: DATABASE_URL environment variable is not set")
-	}
-	log.Println("DB: connecting with DATABASE_URL")
+	// ЖЁСТКО ПРОПИСАННАЯ СТРОКА ПОДКЛЮЧЕНИЯ (IPv4-совместимая, Session pooler)
+	connStr := "postgresql://postgres.qxtpzmqglvxjahodmsxb:ki0Iz1aJ8WfSBC3n@aws-0-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=require"
+
+	log.Println("DB: connecting with hardcoded DATABASE_URL")
 	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
@@ -72,28 +71,6 @@ func initDB() {
 		log.Fatal("FATAL: failed to create table: ", err)
 	}
 	log.Println("DB: table 'messages' ready")
-
-	// Отключаем RLS
-	if _, err = db.Exec("ALTER TABLE messages DISABLE ROW LEVEL SECURITY;"); err != nil {
-		log.Println("WARN: could not disable RLS:", err)
-	} else {
-		log.Println("DB: RLS disabled for messages")
-	}
-
-	// Выводим колонки
-	rows, err := db.Query("SELECT column_name FROM information_schema.columns WHERE table_name='messages' ORDER BY ordinal_position")
-	if err != nil {
-		log.Println("DB WARN: cannot read columns:", err)
-	} else {
-		var cols []string
-		for rows.Next() {
-			var c string
-			rows.Scan(&c)
-			cols = append(cols, c)
-		}
-		rows.Close()
-		log.Printf("DB: table 'messages' columns: %v", cols)
-	}
 }
 
 func saveMessageToDB(m Message, fileData []byte) error {
