@@ -57,7 +57,6 @@ func initDB() {
 	}
 	log.Println("DB: connected and ping successful")
 
-	// Создаём таблицу, если её нет
 	createTableSQL := `
 	CREATE TABLE IF NOT EXISTS messages (
 		id TEXT PRIMARY KEY,
@@ -73,6 +72,28 @@ func initDB() {
 		log.Fatal("FATAL: failed to create table: ", err)
 	}
 	log.Println("DB: table 'messages' ready")
+
+	// Отключаем RLS
+	if _, err = db.Exec("ALTER TABLE messages DISABLE ROW LEVEL SECURITY;"); err != nil {
+		log.Println("WARN: could not disable RLS:", err)
+	} else {
+		log.Println("DB: RLS disabled for messages")
+	}
+
+	// Выводим колонки
+	rows, err := db.Query("SELECT column_name FROM information_schema.columns WHERE table_name='messages' ORDER BY ordinal_position")
+	if err != nil {
+		log.Println("DB WARN: cannot read columns:", err)
+	} else {
+		var cols []string
+		for rows.Next() {
+			var c string
+			rows.Scan(&c)
+			cols = append(cols, c)
+		}
+		rows.Close()
+		log.Printf("DB: table 'messages' columns: %v", cols)
+	}
 }
 
 func saveMessageToDB(m Message, fileData []byte) error {
@@ -92,18 +113,24 @@ func saveMessageToDB(m Message, fileData []byte) error {
 func loadHistory() []Message {
 	rows, err := db.Query(`SELECT id, username, text, is_file, file_name, type, timestamp FROM messages ORDER BY timestamp ASC`)
 	if err != nil {
+		log.Printf("DB ERROR: loadHistory query failed: %v", err)
 		return nil
 	}
 	defer rows.Close()
 	var msgs []Message
 	for rows.Next() {
 		var m Message
-		rows.Scan(&m.ID, &m.Username, &m.Text, &m.IsFile, &m.FileName, &m.Type, &m.Timestamp)
+		err := rows.Scan(&m.ID, &m.Username, &m.Text, &m.IsFile, &m.FileName, &m.Type, &m.Timestamp)
+		if err != nil {
+			log.Printf("DB ERROR: loadHistory scan: %v", err)
+			continue
+		}
 		if m.IsFile {
 			m.FileUrl = "/api/file/" + m.ID
 		}
 		msgs = append(msgs, m)
 	}
+	log.Printf("DB: loaded %d history messages", len(msgs))
 	return msgs
 }
 
