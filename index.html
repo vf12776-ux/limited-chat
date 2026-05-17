@@ -15,6 +15,60 @@
   </head>
   <body>
     <div id="root"></div>
+        <!-- Кнопка установки PWA (скрыта по умолчанию) -->
+    <button id="installBtn" style="position: fixed; bottom: 20px; right: 20px; z-index: 1000; padding: 12px 24px; background-color: #4CAF50; color: white; border: none; border-radius: 30px; font-size: 16px; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.2); display: none;">
+        📱 Установить приложение
+    </button>
+
+    <script>
+        (function() {
+            let deferredPrompt = null;
+            const installBtn = document.getElementById('installBtn');
+
+            // Проверка: уже установлено (standalone)
+            if (window.matchMedia('(display-mode: standalone)').matches) {
+                if (installBtn) installBtn.style.display = 'none';
+                return;
+            }
+
+            // Проверка через API установленных приложений
+            if ('getInstalledRelatedApps' in navigator) {
+                navigator.getInstalledRelatedApps().then(relatedApps => {
+                    const installed = relatedApps.some(app => app.platform === 'webapp');
+                    if (installed && installBtn) installBtn.style.display = 'none';
+                }).catch(() => {});
+            }
+
+            // Событие готовности к установке
+            window.addEventListener('beforeinstallprompt', (e) => {
+                e.preventDefault();
+                deferredPrompt = e;
+                if (installBtn) installBtn.style.display = 'block';
+            });
+
+            // Нажатие на кнопку
+            if (installBtn) {
+                installBtn.addEventListener('click', async () => {
+                    if (!deferredPrompt) return;
+                    deferredPrompt.prompt();
+                    const { outcome } = await deferredPrompt.userChoice;
+                    console.log('Install prompt outcome:', outcome);
+                    deferredPrompt = null;
+                    installBtn.style.display = 'none';
+                });
+            }
+
+            // Если на iOS, показываем альтернативную инструкцию
+            const isIOSSafari = /iP(ad|hone|od).+Version\/[\d\.]+.*Safari/i.test(navigator.userAgent);
+            if (isIOSSafari && installBtn) {
+                installBtn.textContent = '📲 Как установить (iOS)';
+                installBtn.onclick = () => {
+                    alert('Нажмите "Поделиться" → "На экран «Домой»"');
+                };
+                installBtn.style.display = 'block';
+            }
+        })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
